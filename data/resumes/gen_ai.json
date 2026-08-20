@@ -1,0 +1,88 @@
+{
+  "resume_id": "gen_ai",
+  "label": "Gen AI / ML Engineer",
+  "target_roles": ["AI Engineer", "Machine Learning Engineer", "Generative AI", "LLM Engineer", "ML Engineer", "NLP Engineer"],
+  "experience": [
+    {
+      "company": "University of North Texas",
+      "location": "Denton, TX, USA",
+      "title": "Data Analyst",
+      "dates": "August 2025 – Present",
+      "bullets": [
+        "Improved data accuracy by maintaining Faculty Senate databases with SQL, Excel/Power Query for reporting-ready records",
+        "Supported governance decisions by building Tableau dashboards on faculty compensation for Senate leadership",
+        "Automated elections, committee reporting, and scheduling with Power Automate and Qualtrics across UNT leadership offices"
+      ]
+    },
+    {
+      "company": "Datameadows",
+      "location": "Hyderabad, India",
+      "title": "Data Science Analyst Intern",
+      "dates": "November 2023 – March 2024",
+      "bullets": [
+        "Addressed customer churn by building Airflow pipelines from S3 to Snowflake, enabling reliable daily customer-behavior analysis",
+        "Standardized customer metrics by building tested dbt models, creating a shared source of truth across marketing, product, and DS teams",
+        "Reduced retention waste by developing an XGBoost churn model and integrating risk scores into the CRM for targeted outreach",
+        "Improved prediction reliability by tracking models with MLflow and deploying AWS scoring pipelines with drift monitoring"
+      ]
+    },
+    {
+      "company": "Altair Solutions",
+      "location": "Delhi, India",
+      "title": "Data Science Intern",
+      "dates": "June 2022 – August 2022",
+      "bullets": [
+        "Streamlined forecasting by developing and validating ML models in Azure ML, improving experimentation workflows",
+        "Improved cost and demand forecasts using XGBoost, LightGBM, Prophet, and VAR across multiple time-series problems",
+        "Improved model transparency using SHAP and LIME to explain feature importance in production"
+      ]
+    },
+    {
+      "company": "MRS Pvt Ltd",
+      "location": "Delhi, India",
+      "title": "Business Analyst Intern",
+      "dates": "March 2021 – May 2021",
+      "bullets": [
+        "Designed A/B experiments on 41K contacts using hypothesis testing, finding conversion lift (14.0% vs 5.7%, p < 0.001)",
+        "Built XGBoost propensity model for targeting (AUC 0.70), achieving 2.7x conversion lift in top segments",
+        "Developed Python ML pipelines for feature engineering, validation, and statistical testing with negative controls"
+      ]
+    }
+  ],
+  "projects": [
+    {
+      "name": "AI Document Intelligence Platform — RAG & Agent Service",
+      "link": "Github",
+      "bullets": [
+        "Built a RAG service on ChromaDB with Hugging Face embeddings, document chunking, and duplicate detection",
+        "Designed a tool-routing agent over vector search and SQL analytics, with swappable Ollama/Groq/OpenAI backends",
+        "Shipped a FastAPI REST API, containerized with Docker and deployed via a GitHub Actions CI/CD pipeline",
+        "Built a full-stack web interface (HTML/CSS/JavaScript) that calls the FastAPI backend for a complete request-to-response flow"
+      ]
+    },
+    {
+      "name": "Sales Analytics MCP Server",
+      "link": "Github",
+      "bullets": [
+        "Built a Model Context Protocol server exposing 5 analytics tools an LLM calls to answer from real query results",
+        "Secured the SQL tool against the LLM as an untrusted caller, blocking all write/injection attempts (6 tests)",
+        "Split tool logic from the protocol layer for full testability (16 passing tests)"
+      ]
+    },
+    {
+      "name": "PySpark Event ETL Pipeline",
+      "link": "Github",
+      "bullets": [
+        "Built a PySpark ETL pipeline on a bronze/silver/gold architecture over ~62K daily events",
+        "Added schema enforcement, window-function dedup, and a data-quality quarantine",
+        "Orchestrated with an Airflow DAG whose retention gate fails bad runs (5 tests)"
+      ]
+    }
+  ],
+  "skills": {
+    "Languages & Tools": "Python, SQL, R, Git, GitHub, VS Code, REST APIs, Linux, Jupyter",
+    "AI / ML & GenAI": "PyTorch, scikit-learn, Hugging Face Transformers, LangChain, RAG, Generative AI, NLP",
+    "Web & Cloud": "FastAPI, Streamlit, HTML/CSS, JavaScript, Docker, CI/CD (GitHub Actions), AWS, GCP, Azure",
+    "Data & BI": "PostgreSQL, Snowflake, Pandas, NumPy, Power BI, Tableau, Excel"
+  }
+}

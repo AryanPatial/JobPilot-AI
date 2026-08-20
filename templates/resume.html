@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  @page { size: Letter; margin: 0.5in 0.55in; }
+  * { box-sizing: border-box; }
+  body { font-family: "Calibri", "Carlito", "Helvetica", sans-serif; font-size: 10.2pt; color: #111; line-height: 1.28; margin: 0; }
+  .name { text-align: center; font-size: 20pt; font-weight: 700; letter-spacing: 0.5px; }
+  .contact { text-align: center; font-size: 9.3pt; margin-top: 2px; margin-bottom: 8px; }
+  .section-title { font-size: 10.5pt; font-weight: 700; text-transform: uppercase; border-bottom: 1.1px solid #111; margin: 9px 0 3px; padding-bottom: 1px; letter-spacing: 0.4px; }
+  .row { display: flex; justify-content: space-between; }
+  .row .left { font-weight: 700; }
+  .row .right { font-style: italic; white-space: nowrap; }
+  .subrow { display: flex; justify-content: space-between; font-size: 9.9pt; }
+  .subrow .role { font-style: italic; }
+  .subrow .dates { font-style: italic; white-space: nowrap; }
+  ul { margin: 2px 0 4px; padding-left: 16px; }
+  li { margin: 1px 0; }
+  .coursework { font-size: 9.8pt; margin: 1px 0 3px; }
+  .proj-name { font-weight: 700; }
+  .skills-line { margin: 1px 0; }
+  .skills-cat { font-weight: 700; }
+</style>
+</head>
+<body>
+  <div class="name">{{ name }}</div>
+  <div class="contact">{{ location }} | {{ phone }} | {{ email }} | {{ linkedin }} | {{ github }}</div>
+
+  <div class="section-title">Education</div>
+  {% for e in education %}
+  <div class="row"><span class="left">{{ e.school }}</span><span class="right">{{ e.location }}</span></div>
+  <div class="subrow"><span class="role">{{ e.degree }}{% if e.detail %}, {{ e.detail }}{% endif %}</span><span class="dates">{{ e.dates }}</span></div>
+  {% if e.coursework %}<div class="coursework">&bull; Relevant Courses: {{ e.coursework }}</div>{% endif %}
+  {% endfor %}
+
+  <div class="section-title">Work Experience</div>
+  {% for j in experience %}
+  <div class="row"><span class="left">{{ j.company }}</span><span class="right">{{ j.location }}</span></div>
+  <div class="subrow"><span class="role">{{ j.title }}</span><span class="dates">{{ j.dates }}</span></div>
+  <ul>{% for b in j.bullets %}<li>{{ b }}</li>{% endfor %}</ul>
+  {% endfor %}
+
+  <div class="section-title">Projects</div>
+  {% for p in projects %}
+  <div><span class="proj-name">{{ p.name }}</span>{% if p.link %} [{{ p.link }}]{% endif %}</div>
+  <ul>{% for b in p.bullets %}<li>{{ b }}</li>{% endfor %}</ul>
+  {% endfor %}
+
+  <div class="section-title">Skills</div>
+  {% for cat, val in skills.items() %}
+  <div class="skills-line"><span class="skills-cat">{{ cat }}:</span> {{ val }}</div>
+  {% endfor %}
+</body>
+</html>

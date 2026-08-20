@@ -1,0 +1,88 @@
+{
+  "resume_id": "data_analytics",
+  "label": "Data Science / Analytics",
+  "target_roles": ["Data Analyst", "Data Scientist", "Analytics Engineer", "Business Analyst", "BI Analyst", "Business Intelligence"],
+  "experience": [
+    {
+      "company": "University of North Texas",
+      "location": "Denton, TX, USA",
+      "title": "Data Analyst",
+      "dates": "August 2025 – Present",
+      "bullets": [
+        "Maintain Faculty Senate databases (SQL, Excel/Power Query) with accurate, reporting-ready records",
+        "Build Tableau dashboards on faculty compensation, partnering with Senate leadership on governance decisions",
+        "Automate reporting with Power Automate and Qualtrics for elections and committee operations, cutting manual effort"
+      ]
+    },
+    {
+      "company": "Datameadows",
+      "location": "Hyderabad, India",
+      "title": "Data Science Analyst Intern",
+      "dates": "November 2023 – March 2024",
+      "bullets": [
+        "Built and deployed CI/CD workflows with GitHub Actions and AWS, cutting deployment time across 20+ workflow runs",
+        "Managed code with Git version control in a collaborative, multi-feature development workflow",
+        "Developed Python data/NLP pipelines processing large document sets using Hugging Face Transformer models",
+        "Partnered with cross-functional teams to turn requirements into reliable, production-ready data workflows"
+      ]
+    },
+    {
+      "company": "Altair Solutions",
+      "location": "Delhi, India",
+      "title": "Data Science Intern",
+      "dates": "June 2022 – August 2022",
+      "bullets": [
+        "Developed ML solutions in Azure ML for model training, validation, and experimentation across forecasting problems",
+        "Built supervised (XGBoost, LightGBM) and time-series (Prophet, VAR) models for cost and demand forecasting",
+        "Applied SHAP and LIME interpretability to analyze feature importance and improve model transparency in production"
+      ]
+    },
+    {
+      "company": "MRS Pvt Ltd",
+      "location": "Delhi, India",
+      "title": "Business Analyst Intern",
+      "dates": "March 2021 – May 2021",
+      "bullets": [
+        "Engineered SQL pipelines for data mining and KPI reporting, resolving 4 operational bottlenecks for leadership",
+        "Developed Tableau dashboards for operational analysis, cutting manual reporting effort by 25%",
+        "Applied regression analysis to churn patterns, isolating key variables that improved retention strategies by 10%"
+      ]
+    }
+  ],
+  "projects": [
+    {
+      "name": "Retail Sales Analytics — SQL + Dashboard",
+      "link": "Github",
+      "bullets": [
+        "Cleaned and analyzed 12K retail orders in SQL (DuckDB), building KPIs and monthly revenue trends",
+        "Identified Q4 seasonality and top category/region revenue drivers through segmented SQL analysis",
+        "Compared Online vs In-Store channel performance over time, isolating Online as the main seasonal-lift driver",
+        "Quantified discount-band effects on order volume vs order value to inform promotion strategy"
+      ]
+    },
+    {
+      "name": "Customer Segmentation — RFM + K-Means",
+      "link": "Github",
+      "bullets": [
+        "Engineered RFM features from 20K+ transactions and segmented 2,200 customers with K-Means clustering",
+        "Selected cluster count using elbow and silhouette methods, profiling four actionable customer segments",
+        "Mapped each segment to a retention or win-back action, concentrating spend on high-value customers"
+      ]
+    },
+    {
+      "name": "Demand Forecasting — Time Series",
+      "link": "Github",
+      "bullets": [
+        "Forecast daily demand with SARIMA after decomposing trend and weekly/annual seasonality",
+        "Benchmarked against a seasonal-naive baseline on held-out data, cutting MAE ~14% (MAPE 10.5%)",
+        "Validated out-of-sample performance with MAE/MAPE on a 60-day test split"
+      ]
+    }
+  ],
+  "skills": {
+    "Programming & Databases": "Python, SQL, R, PostgreSQL, Snowflake, BigQuery, DuckDB, Jupyter",
+    "Statistics & ML": "scikit-learn, XGBoost, Random Forest, K-Means, A/B Testing, Hypothesis Testing, Regression",
+    "Data Engineering": "Pandas, NumPy, dbt, Airflow, ETL/ELT, Data Modeling, Docker, AWS/GCP/Azure",
+    "BI & Visualization": "Tableau, Power BI (DAX, Power Query), Looker Studio, matplotlib/seaborn, Excel"
+  }
+}

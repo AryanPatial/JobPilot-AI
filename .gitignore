@@ -1,0 +1,10 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+output/
+*.sqlite
+.DS_Store
+{src/
+{data/

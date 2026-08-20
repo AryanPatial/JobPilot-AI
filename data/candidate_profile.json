@@ -1,0 +1,54 @@
+{
+  "identity": {
+    "full_name": "Aryan Patial",
+    "first_name": "Aryan",
+    "last_name": "Patial",
+    "location": "Dallas, TX",
+    "phone": "(940) 312-9432",
+    "email": "kakupatial2000@gmail.com",
+    "linkedin": "linkedin.com/in/aryan-patial",
+    "github": "github.com/aryanpatial"
+  },
+  "education": [
+    {
+      "school": "University of North Texas",
+      "location": "Denton, TX",
+      "degree": "Master of Science in Data Science",
+      "detail": "GPA 4.0/4.00",
+      "dates": "August 2024 \u2013 May 2026",
+      "coursework": "Statistical Modeling, Machine Learning, Database Management, Data Visualization, Data Mining, Data Retrieval"
+    },
+    {
+      "school": "Dr. APJ Abdul Kalam Technical University",
+      "location": "Lucknow, India",
+      "degree": "Bachelor of Technology in Information Technology",
+      "detail": "CGPA 8.31/10",
+      "dates": "August 2019 \u2013 June 2023",
+      "coursework": null
+    }
+  ],
+  "_note": "These are your confirmed application answers. The bot reads facts from here and never guesses them. Replace the email above with your throwaway test email before running.",
+  "application_answers": {
+    "work_authorization_us": "Yes",
+    "requires_sponsorship_now_or_future": "Yes",
+    "visa_status": "F-1 OPT",
+    "willing_to_relocate": "Yes",
+    "salary_expectation": "AUTO",
+    "earliest_start_date": "AUTO",
+    "gender": "Prefer not to say",
+    "race_ethnicity": "Prefer not to say",
+    "veteran_status": "I am not a protected veteran",
+    "disability_status": "No, I do not have a disability",
+    "how_did_you_hear": "Company careers page"
+  },
+  "screening_answers": {
+    "_note": "Non-legal screening questions the bot may answer. Legal attestations (relationships, outside business, investments, IP, government officials) are never auto-answered - see NEVER_ANSWER in apply.py.",
+    "used_product": "No",
+    "worked_here_before": "No",
+    "military_status": "I have never served in the military",
+    "pronouns": "He/Him",
+    "willing_to_work_from_office": "Yes",
+    "lgbtq_status": "I don't wish to answer",
+    "preferred_office_location": "AUTO"
+  }
+}

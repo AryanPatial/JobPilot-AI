@@ -1,0 +1,22 @@
+{
+  // Local venv for this project. Create with:
+  //   python3 -m venv venv && ./venv/bin/pip install -r requirements.txt
+  //   ./venv/bin/playwright install chromium
+  "python.defaultInterpreterPath": "${workspaceFolder}/venv/bin/python",
+  "python.terminal.activateEnvironment": true,
+
+  // Resolve `import agent` / `import helpers` from the project root.
+  "python.analysis.extraPaths": ["."],
+
+  // Report real import/attribute problems, but don't red-line every untyped
+  // third-party call. Set to "off" to stop type-checking entirely.
+  "python.analysis.typeCheckingMode": "basic",
+  "python.analysis.diagnosticSeverityOverrides": {
+    "reportMissingImports": "warning",
+    "reportMissingModuleSource": "none",
+    "reportAttributeAccessIssue": "none",
+    "reportOptionalSubscript": "none",
+    "reportOptionalMemberAccess": "none",
+    "reportGeneralTypeIssues": "none"
+  }
+}
