@@ -57,6 +57,11 @@ FIELD_PATTERNS: list[tuple[str, list[str]]] = [
                               r"as an employee,? intern,? or contractor"]),
     ("preferred_office_location", [r"preferred office location", r"which office",
                                    r"office location"]),
+    ("relationships_disclosure", [r"personal[/ ]?familial", r"familial relation",
+                                  r"outside business", r"business activit",
+                                  r"intellectual property ownership"]),
+    ("government_official",  [r"government official", r"public official",
+                              r"bribery", r"corruption risk"]),
     ("willing_to_work_from_office", [r"willing to work from the office",
                                      r"\bonsite\b", r"\bon-site\b"]),
     ("disability_status",    [r"disab"]),
@@ -66,18 +71,14 @@ FIELD_PATTERNS: list[tuple[str, list[str]]] = [
 # Labels we never want to touch (site search boxes, consent checkboxes, etc.)
 IGNORE_LABEL = re.compile(r"search|newsletter|subscribe|password|confirm email", re.I)
 
-# Legal / compliance attestations. These carry real legal weight and the honest
-# answer depends on facts no profile file can encode, so the bot NEVER answers
-# them - they are always left blank for the human, even if a pattern above would
-# otherwise match. Consent checkboxes are separately never ticked.
+# Free-text follow-ups to the compliance questions. Since the answers below are
+# "No", these boxes should stay empty — and a model/regex should never invent
+# prose for a legal attestation. Consent checkboxes are separately never ticked
+# (the fill loop skips every checkbox and radio unconditionally).
 NEVER_ANSWER = re.compile(
-    r"personal[/ ]?familial|familial relation|relationships? in relation to|"
-    r"outside business|business activit|"
-    r"investment|equity stake|financial interest|"
-    r"intellectual property|patent|trademark|copyright|invention|"
-    r"government official|public official|state-owned|bribery|corrupt|"
     r"if you answered|please provide additional information|"
-    r"do you certify|i certify|attest",
+    r"please (explain|describe|elaborate)|"
+    r"do you certify|i certify|i attest",
     re.I,
 )
 
@@ -191,7 +192,20 @@ def _match_key(label: str) -> str | None:
     return None
 
 
-def _choose_option(options: list[str], desired: str) -> str | None:
+def _choose_option(options: list[str], desired) -> str | None:
+    """Accepts a string, or a list meaning 'try these in order, first match
+    wins' (e.g. ["South Asian", "Asian"] for forms that only offer the broader
+    category)."""
+    if isinstance(desired, (list, tuple)):
+        for candidate in desired:
+            hit = _choose_one_option(options, candidate)
+            if hit is not None:
+                return hit
+        return None
+    return _choose_one_option(options, desired)
+
+
+def _choose_one_option(options: list[str], desired: str) -> str | None:
     """Pick the option that genuinely expresses `desired`. Returns None rather
     than guessing.
 
@@ -212,21 +226,30 @@ def _choose_option(options: list[str], desired: str) -> str | None:
         if _norm(o) == want:
             return o
 
-    # 2. "Prefer not to say" family -> the form's own decline option.
+    # 2. "Never" answers. "I have never worked at Robinhood" must still match
+    #    when another company words it "I have never worked at Stripe". Only
+    #    fires when exactly one option is a "never", so it can't pick between
+    #    two of them.
+    if "never" in want:
+        nevers = [o for o in real if "never" in _norm(o)]
+        if len(nevers) == 1:
+            return nevers[0]
+
+    # 3. "Prefer not to say" family -> the form's own decline option.
     if any(w in want for w in DECLINE_WORDS):
         for o in real:
             if any(w in _norm(o) for w in DECLINE_WORDS):
                 return o
         return None
 
-    # 3. Plain yes/no questions: match the leading token only.
+    # 4. Plain yes/no questions: match the leading token only.
     if want in ("yes", "no"):
         for o in real:
             if _norm(o).split()[:1] == [want]:
                 return o
         return None
 
-    # 4. Location-style values: "Dallas, TX" should find "Dallas, Texas,
+    # 5. Location-style values: "Dallas, TX" should find "Dallas, Texas,
     #    United States". Expand the state abbreviation and prefer a prefix hit
     #    so we take "Dallas, Texas" over "Lake Dallas, Texas".
     for variant in (want, _expand_state(want)):
@@ -236,7 +259,7 @@ def _choose_option(options: list[str], desired: str) -> str | None:
         if pref:
             return pref[0]
 
-    # 5. Substring match — but only where the polarity agrees, so
+    # 6. Substring match — but only where the polarity agrees, so
     #    "I am not a protected veteran" can never select "I identify as a
     #    protected veteran". If more than one option survives, it's ambiguous.
     want_neg = _is_negative(desired)
@@ -419,7 +442,10 @@ def fill_greenhouse_form(url: str, fields: dict, open_questions: list) -> dict:
         elif ctrl["type"] in ("radio", "checkbox"):
             ok = False                                  # never auto-tick consent boxes
         else:
-            ok = _fill_text(page, ctrl["idx"], value)
+            # A list value is an ordered preference for dropdowns; a plain text
+            # box just gets the first choice.
+            ok = _fill_text(page, ctrl["idx"],
+                            value[0] if isinstance(value, (list, tuple)) else value)
 
         (filled if ok else skipped).append(f"{key} ({ctrl['label'][:40]})")
         if ok:

@@ -35,20 +35,25 @@
     "willing_to_relocate": "Yes",
     "salary_expectation": "AUTO",
     "earliest_start_date": "AUTO",
-    "gender": "Prefer not to say",
-    "race_ethnicity": "Prefer not to say",
+    "gender": "Cisgender man",
+    "race_ethnicity": [
+      "South Asian",
+      "Asian"
+    ],
     "veteran_status": "I am not a protected veteran",
-    "disability_status": "No, I do not have a disability",
+    "disability_status": "No, I don't have a disability",
     "how_did_you_hear": "Company careers page"
   },
   "screening_answers": {
-    "_note": "Non-legal screening questions the bot may answer. Legal attestations (relationships, outside business, investments, IP, government officials) are never auto-answered - see NEVER_ANSWER in apply.py.",
+    "_note": "Exact option text so react-select matches. A list means 'try these in order' (first match wins). The consent checkbox is never ticked.",
     "used_product": "No",
-    "worked_here_before": "No",
-    "military_status": "I have never served in the military",
-    "pronouns": "He/Him",
+    "worked_here_before": "I have never worked at Robinhood",
     "willing_to_work_from_office": "Yes",
-    "lgbtq_status": "I don't wish to answer",
-    "preferred_office_location": "AUTO"
+    "pronouns": "He / Him",
+    "preferred_office_location": "New York, NY",
+    "military_status": "I have never served in the military",
+    "lgbtq_status": "No",
+    "relationships_disclosure": "No",
+    "government_official": "No"
   }
 }

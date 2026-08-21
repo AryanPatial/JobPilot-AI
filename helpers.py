@@ -41,10 +41,94 @@ import os
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 
-def get_llm(temperature: float = 0.3, structured_schema=None):
-    """One place to get the LLM. Swap providers here and nowhere else."""
+LLM_TIMEOUT_SECONDS = 150
+
+
+class QuotaExhausted(RuntimeError):
+    """This API key hit its daily limit. Rotate keys, don't retry."""
+
+
+def _api_keys() -> list[str]:
+    """Every key we may use, primary first. Rotated only on quota exhaustion."""
+    keys = [k.strip() for k in os.getenv("GOOGLE_API_KEYS", "").split(",") if k.strip()]
+    primary = os.getenv("GOOGLE_API_KEY", "").strip()
+    if primary and primary in keys:
+        keys.remove(primary)
+    return ([primary] if primary else []) + keys
+
+
+def _models() -> list[str]:
+    """Primary model first, then fallbacks. A 503 is model-level overload, so
+    switching MODEL (not key) is what actually gets you unstuck."""
+    out, seen = [], set()
+    for m in [GEMINI_MODEL] + [x.strip() for x in
+                               os.getenv("GEMINI_FALLBACK_MODELS", "").split(",")]:
+        if m and m not in seen:
+            seen.add(m)
+            out.append(m)
+    return out
+
+
+def _is_quota(exc) -> bool:
+    if isinstance(exc, QuotaExhausted):
+        return True
+    msg = str(exc).lower()
+    return "429" in msg or "resource_exhausted" in msg or "quota" in msg
+
+
+def call_llm(prompt, *, structured_schema=None, temperature: float = 0.3):
+    """Run a prompt with automatic model AND key failover.
+
+    Order matters. A 503 ("high demand") is the model being overloaded, so we
+    move to the next MODEL. A 429 is this key's daily quota, so we move to the
+    next KEY and retry the same model. Within one (key, model) pair,
+    invoke_llm() handles transient 503/timeout backoff.
+    """
+    last = None
+    for model in _models():
+        for idx, key in enumerate(_api_keys()):
+            try:
+                llm = get_llm(temperature=temperature,
+                              structured_schema=structured_schema,
+                              model=model, api_key=key)
+                return invoke_llm(llm, prompt)
+            except Exception as exc:
+                last = exc
+                if _is_quota(exc):
+                    print(f"  [llm] key #{idx + 1} out of quota on {model}; next key")
+                    continue
+                print(f"  [llm] {model} unavailable; trying next model")
+                break
+    if _is_quota(last):
+        raise RuntimeError(
+            f"All {len(_api_keys())} API keys are out of daily quota across "
+            f"{len(_models())} models. Free tier resets ~midnight Pacific."
+        ) from last
+    raise RuntimeError(
+        f"Every model/key combination failed. Last error: {str(last)[:200]}"
+    ) from last
+
+
+def get_llm(temperature: float = 0.3, structured_schema=None,
+            model: str | None = None, api_key: str | None = None):
+    """One place to get the LLM. Swap providers here and nowhere else.
+
+    timeout matters more than it looks: without it a stalled TCP connection to
+    the Gemini endpoint blocks forever inside SSL_read, and invoke_llm()'s retry
+    never fires because no exception is ever raised - the call simply never
+    returns. Seen live: a run sat at 0% CPU for 5+ minutes mid-pipeline.
+    max_retries=0 because invoke_llm() owns the retry/backoff policy.
+    """
     from langchain_google_genai import ChatGoogleGenerativeAI
-    llm = ChatGoogleGenerativeAI(model=GEMINI_MODEL, temperature=temperature)
+    kwargs = dict(
+        model=model or GEMINI_MODEL,
+        temperature=temperature,
+        timeout=LLM_TIMEOUT_SECONDS,
+        max_retries=0,
+    )
+    if api_key:
+        kwargs["google_api_key"] = api_key
+    llm = ChatGoogleGenerativeAI(**kwargs)
     return llm.with_structured_output(structured_schema) if structured_schema else llm
 
 
@@ -63,21 +147,32 @@ def invoke_llm(llm, prompt, *, attempts: int = 5, base_delay: float = 4.0):
             return llm.invoke(prompt)
         except Exception as exc:
             last = exc
-            msg = str(exc)
-            transient = ("503" in msg or "UNAVAILABLE" in msg or "high demand" in msg
-                         or "429" in msg or "RESOURCE_EXHAUSTED" in msg
-                         or "deadline" in msg.lower() or "timeout" in msg.lower())
+            msg = str(exc).lower()
+            name = type(exc).__name__.lower()
+            # Match on the EXCEPTION TYPE as well as the text. httpx.ReadTimeout's
+            # message is "The read operation timed out" - no substring "timeout" -
+            # so a text-only check silently classified it as permanent and gave up
+            # on the first try. Seen live, mid-run, in tailor_resume.
+            # A 429 means this key is done for the day. Backing off 60s won't
+            # help and just burns demo time — bail out now so call_llm() can
+            # rotate to the next key.
+            if "429" in msg or "resource_exhausted" in msg or "quota" in msg:
+                raise QuotaExhausted(str(exc)) from exc
+            transient = (
+                "503" in msg or "unavailable" in msg or "high demand" in msg
+                or "429" in msg or "resource_exhausted" in msg
+                or "500" in msg or "internal error" in msg
+                or "deadline" in msg or "timeout" in msg or "timed out" in msg
+                or "connection" in msg or "temporarily" in msg
+                or any(t in name for t in ("timeout", "unavailable", "connect",
+                                           "remoteprotocol", "serverError".lower()))
+            )
             if not transient or i == attempts - 1:
                 break
             delay = base_delay * (2 ** i)
             print(f"  [llm] {msg[:70]}... retrying in {delay:.0f}s "
                   f"({i + 1}/{attempts - 1})")
             time.sleep(delay)
-    if "RESOURCE_EXHAUSTED" in str(last) or "429" in str(last):
-        raise RuntimeError(
-            "Gemini daily free-tier quota is exhausted (20 requests/day/model). "
-            "One pipeline run costs ~4 calls. Wait for the quota to reset."
-        ) from last
     raise last
 
 

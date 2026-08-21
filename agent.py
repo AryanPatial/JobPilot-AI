@@ -84,14 +84,13 @@ def search_jobs(state: State):
 
 def match_resumes(state: State):
     jd = state["job_description"]
-    llm = H.get_llm(temperature=0.0, structured_schema=ResumeMatch)
     scores = []
     for v in H.load_resume_variants():
         prompt = (
             "Score how well this resume fits the job description (0-100).\n\n"
             f"JOB DESCRIPTION:\n{jd}\n\nRESUME ({v['label']}):\n{_resume_summary(v)}"
         )
-        r: ResumeMatch = H.invoke_llm(llm, prompt)
+        r: ResumeMatch = H.call_llm(prompt, structured_schema=ResumeMatch, temperature=0.0)
         scores.append({"resume_id": v["resume_id"], "label": v["label"], "score": r.score,
                        "reasoning": r.reasoning, "matched": r.matched_keywords, "missing": r.missing_keywords})
     best = max(scores, key=lambda s: s["score"])
@@ -104,13 +103,12 @@ def tailor_resume(state: State):
     rid = state["selected_resume_id"]
     variant = next(v for v in H.load_resume_variants() if v["resume_id"] == rid)
 
-    llm = H.get_llm(temperature=0.3, structured_schema=TailoringPlan)
     prompt = (
         "Tailor this resume to the JD. Rules: NEVER invent experience/skills/metrics. "
         "Only reword a FEW existing bullets to surface relevant work. Keep lengths similar.\n\n"
         f"JOB DESCRIPTION:\n{jd}\n\nRESUME CONTENT:\n{_resume_summary(variant)}"
     )
-    plan: TailoringPlan = H.invoke_llm(llm, prompt)
+    plan: TailoringPlan = H.call_llm(prompt, structured_schema=TailoringPlan, temperature=0.3)
 
     tailored = json.loads(json.dumps(variant))  # deep copy
     rewrites = {b.original.strip(): b.revised.strip() for b in plan.revised_bullets}
@@ -169,15 +167,14 @@ def prepare_application(state: State):
 
     # LLM writes ONLY the prose answer; every fact above came from the file.
     job = state["current_job"]
-    llm = H.get_llm(temperature=0.4, structured_schema=WhyAnswer)
     edu = profile["education"][0]
-    why: WhyAnswer = H.invoke_llm(
-        llm,
+    why: WhyAnswer = H.call_llm(
         f"Candidate: {ident['full_name']}, {edu['degree']} at {edu['school']}, "
         f"~{yrs} yrs experience.\n"
         f"Role: {job['title']} at {job['company']}.\n"
         "Write a concise 2-3 sentence answer to 'Why are you interested in this role?' "
-        "grounded only in a data/ML background. Do not invent company specifics."
+        "grounded only in a data/ML background. Do not invent company specifics.",
+        structured_schema=WhyAnswer, temperature=0.4,
     )
     open_qs = [{"question": "Why are you interested in this role?", "drafted_answer": why.answer}]
 
