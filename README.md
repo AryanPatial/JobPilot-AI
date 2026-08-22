@@ -5,30 +5,37 @@ tailors it to the job description, renders a PDF, **auto-fills the real
 application form in a browser**, then stops so a human clicks Submit. Every
 application is logged to Excel.
 
-Runs on Google Gemini's free tier.
+Runs on OpenAI (`gpt-4o-mini`) or Google Gemini — one setting switches between them.
 
 ---
 
 ## What it actually does
 
 ```
-run.py
+run.py  — you give it an INTENT, e.g. "gen AI roles"
   │
-  ├─ 1. search_jobs         Greenhouse API → title match → strict US-only filter
-  ├─ 2. match_resumes       score both résumé variants against the JD (LLM)
-  ├─ 3. tailor_resume       reword existing bullets only — never invent (LLM)
-  ├─ 4. render_resume       JSON + HTML template → Aryan_Patial_<Company>.pdf
-  ├─ 5. prepare_application map profile → form fields; compute salary/start/years
+  ├─ 1. search_jobs        LLM expands the intent into ~28 real title variants,
+  │                        keyword + strict-US prefilter, then ONE batched LLM
+  │                        call judges every candidate for intent AND seniority
+  ├─ 2. match_resumes      score the two base résumé variants against the JD
+  ├─ 3. select_projects    pick 3 real projects from the 12-project pool
+  ├─ 4. tailor_resume      reword existing bullets only — never invent
+  ├─ 5. grade_resume       deterministic JD coverage, 0-100  (NO LLM)
+  │       ├── < target, and an unused project would help → back to 3
+  │       └── < 70 after retries → next_job, skip this posting entirely
+  ├─ 6. render_resume      JSON + HTML template → Aryan_Patial_<Company>.pdf
+  ├─ 7. prepare_application map profile → form fields; compute salary/start/years
   │
-  ├─ ⏸  PAUSE  ──────────── apply.py opens Chrome and fills the real form
-  │                          YOU review, tick consent, click Submit
+  ├─ ⏸  PAUSE  ─────────── apply.py opens Chrome and fills the real form.
+  │                        GPT picks each dropdown and writes the open answers.
+  │                        YOU review, tick consent, click Submit.
   │
-  ├─ 6. human_review        (resumes when you press Enter)
-  └─ 7. track_application   append a row to output/applications.xlsx
+  ├─ 8. human_review       (resumes when you press Enter)
+  └─ 9. track_application  append a row to output/applications.xlsx
 ```
 
-One job per run. The graph pauses via LangGraph's `interrupt_before`, and state
-is checkpointed to SQLite so a crash resumes instead of starting over.
+Two cycles: tailoring (capped at 3 attempts) and job-skipping. State is
+checkpointed to SQLite, and the pause is a real LangGraph `interrupt_before`.
 
 ---
 
@@ -57,23 +64,26 @@ application answer live there.
 ./venv/bin/python run.py
 ```
 
-Edit `COMPANY_BOARDS` and `TARGET_TITLES` at the top of `run.py` to change what
-it searches.
+Edit `INTENT` and `COMPANY_BOARDS` at the top of `run.py`. `INTENT` is plain
+English — an LLM expands it into the title variants real postings use.
 
 ---
 
 ## The files
 
-| File | Lines | Contains |
-|---|---|---|
-| **run.py** | 94 | Entry point + the only config you edit. Invokes the graph, hands fields to `apply`, waits on `input()`, resumes the graph to log. |
-| **agent.py** | 242 | `State` TypedDict · 4 Pydantic output schemas · the 7 node functions · `build_graph()` with the interrupt and SQLite checkpointer. |
-| **helpers.py** | 471 | Every tool, in 5 sections: LLM factory + failover · Greenhouse search + US filter · salary/experience/date logic · PDF render · Excel tracker. |
-| **apply.py** | 490 | Browser automation. Label→field routing, the option matcher, react-select combobox driver, résumé upload. Imports nothing from this project. |
-| `data/candidate_profile.json` | — | Identity, `application_answers`, `screening_answers`. The source of truth for every fact. |
-| `data/resumes/*.json` | — | Two résumé variants as structured content, not PDFs. |
-| `templates/resume.html` | — | Jinja + print CSS. Code owns layout so the LLM can't wreck it. |
-| `output/` | — | Generated PDFs, `applications.xlsx`, `checkpoints.sqlite`. Gitignored. |
+| File | Contains |
+|---|---|
+| **run.py** | Entry point. `INTENT`, `COMPANY_BOARDS`, `LLM_FIRST`, `SLOW_MO_MS`. Invokes the graph, hands fields to `apply`, waits on `input()`, resumes to log. |
+| **agent.py** | `State` · Pydantic schemas · 10 node functions · `build_graph()` with both cycles, the interrupt and the SQLite checkpointer. |
+| **helpers.py** | Tools: provider-agnostic `call_llm()` with model/key failover · Greenhouse search + US filter · salary/experience/date logic · PDF render · Excel tracker. |
+| **llm_tasks.py** | Every decision the LLM is allowed to make: `expand_query`, `judge_jobs`, `select_content`, `llm_choose`, `llm_answer`. All batched, all structured output. |
+| **scoring.py** | Deterministic JD coverage. No LLM — a model grading its own tailoring flatters itself. |
+| **apply.py** | Browser automation. Label→field routing, `_decide()`, react-select driver, résumé upload. Imports only `re`, `time`, `pathlib`. |
+| `data/candidate_profile.json` | Identity, `application_answers`, `screening_answers`. Source of truth for every fact. |
+| `data/experience_pool.json` | 12 real projects. `select_projects` chooses from these per job. |
+| `data/resumes/*.json` | Two base variants (experience + skills). |
+| `templates/resume.html` | Jinja + print CSS. Code owns layout. |
+| `output/` | PDFs, `applications.xlsx`, `checkpoints.sqlite`, `choices.json`, `last_fill_report.txt`. Gitignored. |
 
 ---
 
@@ -125,17 +135,16 @@ never touched, so the consent box is always yours to tick.
 
 - **Only hosted Greenhouse forms can be auto-filled.** If a job's
   `absolute_url` is on `greenhouse.io` / `job-boards.greenhouse.io`, it works.
-  Companies that redirect to their own careers site (Databricks, Stripe) will
-  open in the browser but the fields won't match.
-- **Same job every run.** `search_jobs` takes `jobs[0]`, so re-running the same
-  boards re-processes the same posting. Nothing reads the tracker to skip it.
-- **Free-tier Gemini is unreliable at peak.** 20 requests/day/key and frequent
-  503s during US afternoons. One run costs ~4 calls. Multiple keys can be listed
-  in `GOOGLE_API_KEYS` (comma-separated) and are rotated on quota exhaustion.
-- **No automated tests.** Verification has been manual.
-- **Company-specific answer text.** `screening_answers.worked_here_before` names
-  a company. The matcher's "never" rule generalises it to other employers, but
-  the stored string is literal.
+  Companies that redirect to their own careers site (Databricks, Stripe) open
+  in the browser but the fields won't match.
+- **Only the first 40 candidates are judged** (`JUDGE_BATCH_LIMIT`). On a wide
+  search the rest are silently dropped.
+- **Multi-page applications aren't handled.** One page only — Workday-style
+  flows need the page-navigation loop that isn't built yet.
+- **No automated tests.** Verification has been manual throughout.
+- **The pool is the ceiling.** `select_projects` can only surface what's in
+  `experience_pool.json`; if a JD wants BigQuery and no project shows it, the
+  score stays low and the job gets skipped rather than the gap being invented.
 
 ---
 
