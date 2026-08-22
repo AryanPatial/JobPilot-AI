@@ -28,6 +28,8 @@ COMPANY_BOARDS = ["reddit", "anthropic", "scaleai", "chime", "gusto",
                   "figma", "twilio", "affirm"]
 
 AUTO_FILL_BROWSER = True   # False = prepare only, no browser
+SLOW_MO_MS = 400           # pause between browser actions so you can watch it
+                           # fill. 0 = instant.
 USE_LLM_CHOOSER = True     # LLM picks dropdowns the rules can't resolve AND
                            # writes free-text answers. Never consulted for
                            # legal/EEO fields — see apply.LLM_FORBIDDEN.
@@ -76,9 +78,14 @@ def main():
             context = f"{job['title']} at {job['company']}. {state['job_description'][:400]}"
             chooser = lambda label, options: llm_tasks.llm_choose(label, options, summary)
             answerer = lambda label: llm_tasks.llm_answer(label, summary, context)
+        before = llm_tasks.CALLS
         handle = apply.fill_greenhouse_form(job["url"], state["application_fields"],
                                             state["open_questions"],
-                                            chooser=chooser, answerer=answerer)
+                                            chooser=chooser, answerer=answerer,
+                                            slow_mo=SLOW_MO_MS)
+        used = llm_tasks.CALLS - before
+        print(f"\n  Form filling used {used} LLM call(s) — everything else came "
+              f"from rules + your profile file.")
         if handle.get("error"):
             print("  ", handle["error"])
     else:

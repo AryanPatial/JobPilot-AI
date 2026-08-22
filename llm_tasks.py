@@ -24,6 +24,15 @@ import helpers as H
 # How many pre-filtered jobs we send to the judge in one call.
 JUDGE_BATCH_LIMIT = 40
 
+# Every LLM call made this run, so the terminal can show how much of the form
+# was the model and how much was deterministic rules.
+CALLS = 0
+
+
+def _count():
+    global CALLS
+    CALLS += 1
+
 
 # ============================================================== 1. QUERY ==== #
 class ExpandedQuery(BaseModel):
@@ -41,6 +50,7 @@ def expand_query(intent: str, *, limit: int = 28) -> list[str]:
     is cheap (the judge in step 2 removes it) while a false negative is not -
     a title we never fetch can never be recovered.
     """
+    _count()
     result: ExpandedQuery = H.call_llm(
         "You expand a job-search intent into the title keywords that real postings "
         "actually use. You know the industry's non-obvious names for roles.\n\n"
@@ -104,6 +114,7 @@ def judge_jobs(intent: str, jobs: list[dict], years_experience: float) -> list[d
         f"{i}. {j['title']}  [{j.get('location', '')}]  — {_one_line(j)}"
         for i, j in enumerate(batch))
 
+    _count()
     result: JobVerdicts = H.call_llm(
         "You screen job postings for a candidate.\n\n"
         f"CANDIDATE INTENT: {intent}\n"
@@ -165,6 +176,7 @@ def select_content(jd: str, pool: list[dict], *, n: int = 3,
                  "demonstrate them. If no project does, pick on overall relevance - "
                  "do NOT stretch a project to claim something it does not show.\n")
 
+    _count()
     result: ContentSelection = H.call_llm(
         "Pick which of this candidate's real projects to put on a résumé for one job.\n\n"
         f"JOB DESCRIPTION:\n{jd[:3500]}\n\n"
@@ -228,6 +240,7 @@ def llm_choose(label: str, options: list[str], profile_summary: str) -> int | No
 
     listing = "\n".join(f"{i}. {o}" for i, o in enumerate(options))
     try:
+        _count()
         result: OptionChoice = H.call_llm(
             "Choose the dropdown option that best answers a job-application question "
             "for this candidate.\n\n"
@@ -298,6 +311,7 @@ def llm_answer(label: str, profile_summary: str, job_context: str = "",
         return cache[key]
 
     try:
+        _count()
         result: WrittenAnswer = H.call_llm(
             "Write a job-application answer for this candidate. Truthful, specific, "
             "first person, no hype, no invented facts.\n\n"

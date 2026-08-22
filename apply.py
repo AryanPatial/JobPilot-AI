@@ -417,7 +417,7 @@ def _chooser_for(key: str, chooser):
 
 
 def fill_greenhouse_form(url: str, fields: dict, open_questions: list,
-                         chooser=None, answerer=None) -> dict:
+                         chooser=None, answerer=None, slow_mo: int = 0) -> dict:
     """Open the form, fill what we can, upload the resume, and leave the browser
     OPEN for you to review + submit. Returns a report of filled/skipped fields.
 
@@ -426,6 +426,8 @@ def fill_greenhouse_form(url: str, fields: dict, open_questions: list,
               field in LLM_FORBIDDEN.
     answerer: callback (label) -> text|None, for free-text questions the rules
               have no value for. Never called for a NEVER_ANSWER label.
+    slow_mo:  milliseconds to pause between browser actions, so you can watch
+              each field being filled instead of the form snapping to done.
 
     Both are passed in rather than imported, which keeps this module free of any
     LLM dependency - it still imports nothing from the rest of the project.
@@ -442,7 +444,7 @@ def fill_greenhouse_form(url: str, fields: dict, open_questions: list,
 
     pw = sync_playwright().start()
     try:
-        browser = pw.chromium.launch(headless=False)   # visible so you can watch + submit
+        browser = pw.chromium.launch(headless=False, slow_mo=slow_mo)  # visible
         page = browser.new_page()
         page.goto(url, wait_until="domcontentloaded")
         page.wait_for_timeout(2500)                    # let React forms mount
@@ -486,6 +488,10 @@ def fill_greenhouse_form(url: str, fields: dict, open_questions: list,
             ok = _fill_text(page, ctrl["idx"],
                             value[0] if isinstance(value, (list, tuple)) else value)
 
+        shown = value[0] if isinstance(value, (list, tuple)) else value
+        source = "rule" if ok else "—"
+        print(f"    {'OK ' if ok else '   '} {key:<28}{str(shown)[:32]:<34}"
+              f"{source if ok else 'left blank for you'}")
         (filled if ok else skipped).append(f"{key} ({ctrl['label'][:40]})")
         if ok:
             seen.add(key)
