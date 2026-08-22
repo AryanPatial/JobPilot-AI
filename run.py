@@ -13,29 +13,26 @@ from datetime import datetime
 
 import agent
 import apply
+import llm_tasks
 
 # ======================= EDIT THESE ======================================== #
-# Company Greenhouse boards to search (add/remove freely).
-#
-# IMPORTANT: only companies that use a HOSTED Greenhouse form can be auto-filled.
-# Verified 2026-08-19:
-#   robinhood, gitlab  -> job-boards.greenhouse.io  (auto-fill works)
-#   databricks         -> redirects to databricks.com (own careers site, NO form)
-#   airtable, discord  -> no US data/AI roles open right now
-# If a board's absolute_url isn't on greenhouse.io, the browser still opens it
-# but the fields won't match. Keep hosted-form companies first.
-COMPANY_BOARDS = ["robinhood", "gitlab"]
+# Say what you want in plain English. An LLM expands this into the title
+# variants real postings actually use — no hardcoded synonym list.
+INTENT = "gen AI and machine learning engineer roles"
 
-# Titles you care about (matched loosely against job titles).
-TARGET_TITLES = [
-    "Data Analyst", "Data Scientist", "Data Engineer", "Analytics Engineer",
-    "Business Analyst", "Business Intelligence", "AI Engineer", "ML Engineer",
-    "Machine Learning", "Generative AI", "LLM",
-]
+# Company Greenhouse boards to search.
+# Only companies on a HOSTED Greenhouse form can be auto-filled — if a board's
+# absolute_url redirects to the company's own careers site (Databricks, Stripe),
+# the browser opens but the fields won't match.
+COMPANY_BOARDS = ["reddit", "anthropic", "scaleai", "chime", "gusto",
+                  "figma", "twilio", "affirm"]
 
-AUTO_FILL_BROWSER = True   # set False to only prepare (no browser), like before
+AUTO_FILL_BROWSER = True   # False = prepare only, no browser
+USE_LLM_CHOOSER = True     # LLM picks dropdowns the rules can't resolve.
+                           # Never consulted for legal/EEO fields — see
+                           # apply.LLM_FORBIDDEN.
 
-# A fresh thread id per run. Reusing one id makes LangGraph resume the PREVIOUS
+# A fresh thread id per run. Reusing one makes LangGraph resume the PREVIOUS
 # run's checkpoint instead of starting a new search.
 THREAD = {"configurable": {"thread_id": f"run-{datetime.now():%Y%m%d-%H%M%S}"}}
 # =========================================================================== #
@@ -45,7 +42,7 @@ def main():
     app = agent.build_graph()
 
     print("\n=== SEARCHING + PREPARING (will pause before you submit) ===\n")
-    state = app.invoke({"board_tokens": COMPANY_BOARDS, "titles": TARGET_TITLES}, THREAD)
+    state = app.invoke({"board_tokens": COMPANY_BOARDS, "intent": INTENT}, THREAD)
 
     if state.get("error") == "no_jobs":
         print("No US jobs matched. Try different company boards or titles.")
@@ -57,14 +54,23 @@ def main():
     print(f"  {job['url']}")
     print(f"  Resume: {state['resume_pdf_path']}")
     print("\n  Match scores:")
-    for s in state["resume_scores"]:
-        print(f"    {s['resume_id']:<15} {s['score']}/100")
+    for sc in state["resume_scores"]:
+        print(f"    {sc['resume_id']:<15} {sc['score']}/100")
+    cov = state.get("coverage") or {}
+    print(f"  Projects: {', '.join(p['name'][:34] for p in state['selected_projects'])}")
+    print(f"  JD coverage: {cov.get('score')}/100 after {state.get('attempts')} "
+          f"tailoring pass(es)")
 
     # ---- Auto-fill the real form (browser stays open for you) ----
     handle = None
     if AUTO_FILL_BROWSER:
         print("\n=== OPENING + FILLING THE APPLICATION FORM ===")
-        handle = apply.fill_greenhouse_form(job["url"], state["application_fields"], state["open_questions"])
+        chooser = None
+        if USE_LLM_CHOOSER:
+            summary = llm_tasks.profile_summary()
+            chooser = lambda label, options: llm_tasks.llm_choose(label, options, summary)
+        handle = apply.fill_greenhouse_form(job["url"], state["application_fields"],
+                                            state["open_questions"], chooser=chooser)
         if handle.get("error"):
             print("  ", handle["error"])
     else:

@@ -324,12 +324,25 @@ def _combobox_options(page, idx: int):
         return None, []
 
 
+# Attested / legal / EEO answers. These come from candidate_profile.json and
+# are resolved by the deterministic rules ONLY - the LLM chooser is never
+# consulted for them, no matter how confused the rules get. A blank here is a
+# safe outcome; a model-invented legal declaration is not.
+LLM_FORBIDDEN = {
+    "work_authorization", "requires_sponsorship", "visa_status",
+    "veteran_status", "military_status", "disability_status",
+    "gender", "race_ethnicity", "lgbtq_status",
+    "relationships_disclosure", "government_official",
+}
+
+
 # Fields where taking the first offered option is acceptable when nothing
 # matches confidently. Deliberately excludes every attested question.
 FIRST_OPTION_OK = {"preferred_office_location"}
 
 
-def _fill_combobox(page, idx: int, desired, *, allow_first: bool = False) -> bool:
+def _fill_combobox(page, idx: int, desired, *, allow_first: bool = False,
+                   chooser=None, label: str = "") -> bool:
     """True = a real option was selected. False = left untouched for the human
     (either no confident match, or the widget never offered options).
 
@@ -365,6 +378,10 @@ def _fill_combobox(page, idx: int, desired, *, allow_first: bool = False) -> boo
         except Exception:
             return False
     choice = _choose_option(options, desired)
+    if choice is None and chooser:
+        picked = chooser(label, options)          # rules failed -> ask the LLM
+        if picked is not None:
+            choice = options[picked]
     if choice is None and allow_first:
         real = [o for o in options
                 if o.strip() and not re.match(r"^(select|choose|--)", o.strip(), re.I)]
@@ -394,9 +411,21 @@ def _upload_resume(page, resume_path) -> bool:
     return False
 
 
-def fill_greenhouse_form(url: str, fields: dict, open_questions: list) -> dict:
+def _chooser_for(key: str, chooser):
+    """The LLM chooser, unless this field is a legal attestation."""
+    return None if (chooser is None or key in LLM_FORBIDDEN) else chooser
+
+
+def fill_greenhouse_form(url: str, fields: dict, open_questions: list,
+                         chooser=None) -> dict:
     """Open the form, fill what we can, upload the resume, and leave the browser
-    OPEN for you to review + submit. Returns a report of filled/skipped fields."""
+    OPEN for you to review + submit. Returns a report of filled/skipped fields.
+
+    chooser: optional callback (label, options) -> index|None, consulted ONLY
+    when the deterministic rules find no confident match, and never for the
+    fields in LLM_FORBIDDEN. Passing it in keeps this module free of any LLM
+    dependency - it still imports nothing from the rest of the project.
+    """
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
@@ -435,10 +464,16 @@ def fill_greenhouse_form(url: str, fields: dict, open_questions: list) -> dict:
 
         if ctrl["tag"] == "select":
             option = _choose_option(ctrl["options"], value)
+            if option is None:
+                pick = _chooser_for(key, chooser)
+                idx = pick(ctrl["label"], ctrl["options"]) if pick else None
+                option = ctrl["options"][idx] if idx is not None else None
             ok = _select_option(page, ctrl["idx"], option) if option else False
         elif ctrl.get("combo"):
             ok = _fill_combobox(page, ctrl["idx"], value,
-                                allow_first=key in FIRST_OPTION_OK)
+                                allow_first=key in FIRST_OPTION_OK,
+                                chooser=_chooser_for(key, chooser),
+                                label=ctrl["label"])
         elif ctrl["type"] in ("radio", "checkbox"):
             ok = False                                  # never auto-tick consent boxes
         else:

@@ -38,31 +38,44 @@ PROFILE_PATH = DATA_DIR / "candidate_profile.json"
 OUTPUT_RESUMES_DIR.mkdir(parents=True, exist_ok=True)
 
 import os
+
+# --------------------------------------------------------------------------- #
+# LLM access. call_llm() is the ONLY place the rest of the app talks to a model,
+# so swapping providers is a one-line .env change and nothing else moves.
+# --------------------------------------------------------------------------- #
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai").lower()
+LLM_TIMEOUT_SECONDS = 90
+
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
-
-
-LLM_TIMEOUT_SECONDS = 150
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 
 class QuotaExhausted(RuntimeError):
-    """This API key hit its daily limit. Rotate keys, don't retry."""
+    """This API key hit its limit. Rotate keys, don't retry."""
 
 
-def _api_keys() -> list[str]:
-    """Every key we may use, primary first. Rotated only on quota exhaustion."""
-    keys = [k.strip() for k in os.getenv("GOOGLE_API_KEYS", "").split(",") if k.strip()]
+def _csv(name: str) -> list[str]:
+    return [x.strip() for x in os.getenv(name, "").split(",") if x.strip()]
+
+
+def _keys() -> list[str]:
+    """Every usable key for the active provider, primary first."""
+    if LLM_PROVIDER == "openai":
+        return [k for k in [os.getenv("OPENAI_API_KEY", "").strip()] if k]
     primary = os.getenv("GOOGLE_API_KEY", "").strip()
-    if primary and primary in keys:
-        keys.remove(primary)
-    return ([primary] if primary else []) + keys
+    rest = [k for k in _csv("GOOGLE_API_KEYS") if k != primary]
+    return ([primary] if primary else []) + rest
 
 
 def _models() -> list[str]:
     """Primary model first, then fallbacks. A 503 is model-level overload, so
     switching MODEL (not key) is what actually gets you unstuck."""
-    out, seen = [], set()
-    for m in [GEMINI_MODEL] + [x.strip() for x in
-                               os.getenv("GEMINI_FALLBACK_MODELS", "").split(",")]:
+    if LLM_PROVIDER == "openai":
+        chain = [OPENAI_MODEL] + _csv("OPENAI_FALLBACK_MODELS")
+    else:
+        chain = [GEMINI_MODEL] + _csv("GEMINI_FALLBACK_MODELS")
+    seen, out = set(), []
+    for m in chain:
         if m and m not in seen:
             seen.add(m)
             out.append(m)
@@ -76,70 +89,31 @@ def _is_quota(exc) -> bool:
     return "429" in msg or "resource_exhausted" in msg or "quota" in msg
 
 
-def call_llm(prompt, *, structured_schema=None, temperature: float = 0.3):
-    """Run a prompt with automatic model AND key failover.
-
-    Order matters. A 503 ("high demand") is the model being overloaded, so we
-    move to the next MODEL. A 429 is this key's daily quota, so we move to the
-    next KEY and retry the same model. Within one (key, model) pair,
-    invoke_llm() handles transient 503/timeout backoff.
-    """
-    last = None
-    for model in _models():
-        for idx, key in enumerate(_api_keys()):
-            try:
-                llm = get_llm(temperature=temperature,
-                              structured_schema=structured_schema,
-                              model=model, api_key=key)
-                return invoke_llm(llm, prompt)
-            except Exception as exc:
-                last = exc
-                if _is_quota(exc):
-                    print(f"  [llm] key #{idx + 1} out of quota on {model}; next key")
-                    continue
-                print(f"  [llm] {model} unavailable; trying next model")
-                break
-    if _is_quota(last):
-        raise RuntimeError(
-            f"All {len(_api_keys())} API keys are out of daily quota across "
-            f"{len(_models())} models. Free tier resets ~midnight Pacific."
-        ) from last
-    raise RuntimeError(
-        f"Every model/key combination failed. Last error: {str(last)[:200]}"
-    ) from last
-
-
 def get_llm(temperature: float = 0.3, structured_schema=None,
             model: str | None = None, api_key: str | None = None):
-    """One place to get the LLM. Swap providers here and nowhere else.
+    """Build a chat model for the active provider.
 
-    timeout matters more than it looks: without it a stalled TCP connection to
-    the Gemini endpoint blocks forever inside SSL_read, and invoke_llm()'s retry
-    never fires because no exception is ever raised - the call simply never
-    returns. Seen live: a run sat at 0% CPU for 5+ minutes mid-pipeline.
-    max_retries=0 because invoke_llm() owns the retry/backoff policy.
+    timeout matters more than it looks: without it a stalled TCP connection
+    blocks forever inside SSL_read and no exception is ever raised, so retry
+    logic never fires. max_retries=0 because invoke_llm() owns the retry policy.
     """
-    from langchain_google_genai import ChatGoogleGenerativeAI
-    kwargs = dict(
-        model=model or GEMINI_MODEL,
-        temperature=temperature,
-        timeout=LLM_TIMEOUT_SECONDS,
-        max_retries=0,
-    )
-    if api_key:
-        kwargs["google_api_key"] = api_key
-    llm = ChatGoogleGenerativeAI(**kwargs)
+    if LLM_PROVIDER == "openai":
+        from langchain_openai import ChatOpenAI
+        llm = ChatOpenAI(model=model or OPENAI_MODEL, temperature=temperature,
+                         timeout=LLM_TIMEOUT_SECONDS, max_retries=0,
+                         api_key=api_key or os.getenv("OPENAI_API_KEY"))
+    else:
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        kwargs = dict(model=model or GEMINI_MODEL, temperature=temperature,
+                      timeout=LLM_TIMEOUT_SECONDS, max_retries=0)
+        if api_key:
+            kwargs["google_api_key"] = api_key
+        llm = ChatGoogleGenerativeAI(**kwargs)
     return llm.with_structured_output(structured_schema) if structured_schema else llm
 
 
-def invoke_llm(llm, prompt, *, attempts: int = 5, base_delay: float = 4.0):
-    """Call the model, retrying transient failures.
-
-    Gemini's free tier returns 503 UNAVAILABLE ("high demand") fairly often and
-    429 RESOURCE_EXHAUSTED once you pass the daily quota. Without this, one blip
-    kills the whole pipeline mid-run with a stack trace. Retries use exponential
-    backoff; a genuine quota exhaustion is re-raised with a clear message.
-    """
+def invoke_llm(llm, prompt, *, attempts: int = 4, base_delay: float = 3.0):
+    """One (key, model) pair, with backoff on transient failures."""
     import time
     last = None
     for i in range(attempts):
@@ -147,33 +121,48 @@ def invoke_llm(llm, prompt, *, attempts: int = 5, base_delay: float = 4.0):
             return llm.invoke(prompt)
         except Exception as exc:
             last = exc
-            msg = str(exc).lower()
-            name = type(exc).__name__.lower()
-            # Match on the EXCEPTION TYPE as well as the text. httpx.ReadTimeout's
-            # message is "The read operation timed out" - no substring "timeout" -
-            # so a text-only check silently classified it as permanent and gave up
-            # on the first try. Seen live, mid-run, in tailor_resume.
-            # A 429 means this key is done for the day. Backing off 60s won't
-            # help and just burns demo time — bail out now so call_llm() can
-            # rotate to the next key.
+            msg, name = str(exc).lower(), type(exc).__name__.lower()
             if "429" in msg or "resource_exhausted" in msg or "quota" in msg:
                 raise QuotaExhausted(str(exc)) from exc
-            transient = (
-                "503" in msg or "unavailable" in msg or "high demand" in msg
-                or "429" in msg or "resource_exhausted" in msg
-                or "500" in msg or "internal error" in msg
-                or "deadline" in msg or "timeout" in msg or "timed out" in msg
-                or "connection" in msg or "temporarily" in msg
-                or any(t in name for t in ("timeout", "unavailable", "connect",
-                                           "remoteprotocol", "serverError".lower()))
-            )
+            # Match on the exception TYPE too: httpx.ReadTimeout's message is
+            # "The read operation timed out" - no substring "timeout" - so a
+            # text-only check wrongly classified it as permanent.
+            transient = ("503" in msg or "unavailable" in msg or "overload" in msg
+                         or "500" in msg or "timed out" in msg or "timeout" in msg
+                         or "connection" in msg
+                         or any(t in name for t in ("timeout", "unavailable",
+                                                    "connect", "remoteprotocol")))
             if not transient or i == attempts - 1:
                 break
             delay = base_delay * (2 ** i)
-            print(f"  [llm] {msg[:70]}... retrying in {delay:.0f}s "
-                  f"({i + 1}/{attempts - 1})")
+            print(f"  [llm] {msg[:64]}... retrying in {delay:.0f}s ({i + 1}/{attempts - 1})")
             time.sleep(delay)
     raise last
+
+
+def call_llm(prompt, *, structured_schema=None, temperature: float = 0.3):
+    """Run a prompt with model AND key failover.
+
+    A 503 means the MODEL is overloaded  -> try the next model.
+    A 429 means the KEY is out of quota  -> try the next key, same model.
+    """
+    last = None
+    for model in _models():
+        for idx, key in enumerate(_keys()):
+            try:
+                return invoke_llm(get_llm(temperature=temperature,
+                                          structured_schema=structured_schema,
+                                          model=model, api_key=key), prompt)
+            except Exception as exc:
+                last = exc
+                if _is_quota(exc):
+                    print(f"  [llm] key #{idx + 1} out of quota on {model}; next key")
+                    continue
+                print(f"  [llm] {model} unavailable; trying next model")
+                break
+    raise RuntimeError(
+        f"All {len(_keys())} key(s) x {len(_models())} model(s) failed "
+        f"on provider '{LLM_PROVIDER}'. Last error: {str(last)[:180]}") from last
 
 
 def load_json(path: Path) -> dict:
@@ -182,6 +171,28 @@ def load_json(path: Path) -> dict:
 
 def load_profile() -> dict:
     return load_json(PROFILE_PATH)
+
+
+EXPERIENCE_POOL_PATH = DATA_DIR / "experience_pool.json"
+_VOCAB_CACHE: set[str] | None = None
+
+
+def load_experience_pool() -> list[dict]:
+    """Every real project the candidate can draw on. Superset of the variants."""
+    if not EXPERIENCE_POOL_PATH.exists():
+        return []
+    return load_json(EXPERIENCE_POOL_PATH).get("projects", [])
+
+
+def claimable_vocabulary() -> set[str]:
+    """Terms the candidate may truthfully claim, mined from their own files.
+    Cached - it never changes within a run."""
+    global _VOCAB_CACHE
+    if _VOCAB_CACHE is None:
+        import scoring
+        _VOCAB_CACHE = scoring.build_vocabulary(
+            EXPERIENCE_POOL_PATH, *sorted(RESUMES_DIR.glob("*.json")))
+    return _VOCAB_CACHE
 
 
 def load_resume_variants() -> list[dict]:

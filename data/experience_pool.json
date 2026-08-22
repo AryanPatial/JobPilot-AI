@@ -1,0 +1,202 @@
+{
+  "_note": "Every real project, superset of the resume variants. select_content picks the best subset per JD. Nothing here may be invented; tailoring may reword only.",
+  "projects": [
+    {
+      "id": "retail_sales_analytics",
+      "name": "Retail Sales Analytics \u2014 SQL + Dashboard",
+      "github": true,
+      "tags": [
+        "sql",
+        "analytics",
+        "bi",
+        "business_analyst"
+      ],
+      "bullets": [
+        "Cleaned and analyzed 12K retail orders in SQL (DuckDB), building KPIs and monthly revenue trends",
+        "Identified Q4 seasonality and top category/region revenue drivers through segmented SQL analysis",
+        "Compared Online vs In-Store channel performance over time, isolating Online as the main seasonal-lift driver",
+        "Quantified discount-band effects on order volume vs order value to inform promotion strategy"
+      ]
+    },
+    {
+      "id": "customer_segmentation",
+      "name": "Customer Segmentation \u2014 RFM + K-Means",
+      "github": true,
+      "tags": [
+        "ml",
+        "analytics",
+        "clustering",
+        "data_science"
+      ],
+      "bullets": [
+        "Engineered RFM features from 20K+ transactions and segmented 2,200 customers with K-Means clustering",
+        "Selected cluster count using elbow and silhouette methods, profiling four actionable customer segments",
+        "Mapped each segment to a retention or win-back action, concentrating spend on high-value customers"
+      ]
+    },
+    {
+      "id": "ai_doc_intelligence",
+      "name": "AI Document Intelligence Platform \u2014 RAG & Agent Service",
+      "github": true,
+      "tags": [
+        "genai",
+        "rag",
+        "agents",
+        "backend",
+        "mlops"
+      ],
+      "bullets": [
+        "Built a RAG service on ChromaDB with Hugging Face embeddings, document chunking, and duplicate detection",
+        "Designed a tool-routing agent over vector search and SQL analytics, with swappable Ollama/Groq/OpenAI backends",
+        "Shipped a FastAPI REST API, containerized with Docker and deployed via a GitHub Actions CI/CD pipeline",
+        "Built a full-stack web interface (HTML/CSS/JavaScript) that calls the FastAPI backend for a complete request-to-response flow"
+      ]
+    },
+    {
+      "id": "rag_qa_service",
+      "name": "Retrieval-Augmented Q&A Service",
+      "github": true,
+      "tags": [
+        "genai",
+        "rag",
+        "llm"
+      ],
+      "bullets": [
+        "Built an end-to-end RAG system (LangChain, LangGraph, ChromaDB): ingestion, chunking, embeddings, vector indexing",
+        "Engineered semantic retrieval with grounded, source-attributed LLM responses across Groq, Ollama, LM Studio",
+        "Built a Streamlit app with document management, SHA-256 duplicate detection, and multi-turn conversations"
+      ]
+    },
+    {
+      "id": "grid_operations_agent",
+      "name": "Grid Operations Agent \u2014 Agentic AI on a Lakehouse",
+      "github": true,
+      "tags": [
+        "agents",
+        "genai",
+        "data_engineering",
+        "spark",
+        "mlops"
+      ],
+      "bullets": [
+        "Built a PySpark medallion pipeline (bronze/silver/gold) on Delta Lake/Databricks with z-score anomaly detection",
+        "Developed a CrewAI multi-agent crew (analyst, forecaster, reporter) over the gold tables with swappable LLM backends",
+        "Deployed the FastAPI service to Kubernetes with autoscaling and health probes, backed by an 11-test CI suite"
+      ]
+    },
+    {
+      "id": "jobpilot_ai",
+      "name": "JobPilot-AI",
+      "github": true,
+      "tags": [
+        "agents",
+        "genai",
+        "llm",
+        "automation"
+      ],
+      "bullets": [
+        "Built an end-to-end automation system orchestrating a six-stage pipeline (search \u2192 match \u2192 apply) using LangGraph and Python",
+        "Engineered a resume-matching system that scores variants against a job description using structured LLM output (Gemini + Pydantic)",
+        "Automated live form filling with Playwright and integrated the Greenhouse API to pull postings and log applications to Excel"
+      ]
+    },
+    {
+      "id": "sales_mcp_server",
+      "name": "Sales Analytics MCP Server",
+      "github": true,
+      "tags": [
+        "genai",
+        "llm",
+        "backend",
+        "security",
+        "analytics"
+      ],
+      "bullets": [
+        "Built a Model Context Protocol server exposing 5 analytics tools an LLM calls to answer from real query results",
+        "Secured the SQL tool against the LLM as an untrusted caller, blocking all write/injection attempts (6 tests)",
+        "Split tool logic from the protocol layer for full testability (16 passing tests)"
+      ]
+    },
+    {
+      "id": "pyspark_etl",
+      "name": "PySpark Event ETL Pipeline",
+      "github": true,
+      "tags": [
+        "data_engineering",
+        "spark",
+        "airflow",
+        "etl"
+      ],
+      "bullets": [
+        "Built a PySpark ETL pipeline on a bronze/silver/gold architecture, processing ~62K daily events into analytics-ready tables",
+        "Added schema enforcement, window-function deduplication, and a data-quality quarantine for invalid rows",
+        "Orchestrated with an Airflow DAG whose retention gate fails bad runs, covered by 5 SparkSession tests"
+      ]
+    },
+    {
+      "id": "text_to_image_studio",
+      "name": "Text-to-Image Generation Studio \u2014 Diffusion & FastAPI Service",
+      "github": true,
+      "tags": [
+        "genai",
+        "deep_learning",
+        "backend",
+        "mlops"
+      ],
+      "bullets": [
+        "Built a text-to-image service on Stable Diffusion (Hugging Face) with style presets, negative prompts, and seed-based reproducibility",
+        "Decoupled the diffusion engine from the API with lazy loading, enabling an 18-test GPU-free CI suite (GitHub Actions)",
+        "Served it via a FastAPI and Streamlit UI, containerized with Docker and device-aware across CUDA/MPS/CPU"
+      ]
+    },
+    {
+      "id": "demand_forecasting",
+      "name": "Demand Forecasting \u2014 Time Series",
+      "github": true,
+      "tags": [
+        "ml",
+        "forecasting",
+        "statistics",
+        "data_science"
+      ],
+      "bullets": [
+        "Built a SARIMA model on 3 years of daily demand, decomposing trend and weekly/annual seasonality into explicit model terms",
+        "Benchmarked against a seasonal-naive baseline on held-out data, cutting MAE ~14% to prove the model earned its complexity",
+        "Validated out-of-sample accuracy with MAE and MAPE on a held-out 60-day test period rather than reporting error in isolation"
+      ]
+    },
+    {
+      "id": "churn_prediction",
+      "name": "Churn Prediction, End-to-End ML Service",
+      "github": true,
+      "tags": [
+        "ml",
+        "mlops",
+        "backend",
+        "data_science"
+      ],
+      "bullets": [
+        "Built an end-to-end churn service (pipeline, model, API) with a calibrated Random Forest at PR-AUC 0.51 vs a 0.21 base rate",
+        "Calibrated probabilities via isotonic regression (Brier 0.180 \u2192 0.139) and set a cost-based threshold cutting cost 14%",
+        "Served the model behind a FastAPI endpoint returning probability, risk band, and an outreach flag, with automated tests"
+      ]
+    },
+    {
+      "id": "marketing_experimentation",
+      "name": "Marketing Channel Experimentation & Propensity Targeting",
+      "github": true,
+      "tags": [
+        "statistics",
+        "experimentation",
+        "ml",
+        "analytics",
+        "business_analyst"
+      ],
+      "bullets": [
+        "Ran a two-proportion z-test on 41K contacts: cellular converted 2.4\u00d7 higher than telephone (14.0% vs 5.7%, p < 0.001)",
+        "Built an XGBoost propensity model (AUC 0.70); top decile converted at 29% vs an 11% base rate \u2014 a 2.7\u00d7 lift",
+        "Automated cleaning through significance testing, with a negative-control test that rejects a scrambled (null) effect"
+      ]
+    }
+  ]
+}

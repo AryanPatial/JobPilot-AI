@@ -15,12 +15,15 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 import helpers as H
+import llm_tasks as T
+import scoring as S
 
 
 # ------------------------------------------------------------------ STATE --- #
 class State(TypedDict, total=False):
     board_tokens: List[str]
-    titles: List[str]
+    intent: str                      # plain-English, e.g. "gen AI roles"
+    titles: List[str]                # LLM-expanded from intent
 
     jobs: list
     current_job: Optional[dict]
@@ -29,7 +32,10 @@ class State(TypedDict, total=False):
     resume_scores: list
     selected_resume_id: Optional[str]
 
+    selected_projects: list          # chosen from the experience pool
     tailored_resume: Optional[dict]
+    coverage: Optional[dict]         # deterministic score + named gaps
+    attempts: int                    # tailoring cycles used (hard cap)
     resume_pdf_path: Optional[str]
 
     application_fields: Optional[dict]
@@ -70,15 +76,35 @@ def _resume_summary(v: dict) -> str:
 
 # ------------------------------------------------------------------ NODES --- #
 def search_jobs(state: State):
-    jobs = H.search_jobs_greenhouse(state["board_tokens"], state["titles"])
+    """Intent -> LLM title expansion -> keyword+US prefilter -> ONE batched judge.
+
+    The judge does double duty (spec items 1 and 3): it drops roles that only
+    mention the keywords, and roles whose seniority doesn't fit the candidate.
+    Neither is visible to substring matching.
+    """
+    intent = state.get("intent") or "data and AI roles"
+    titles = T.expand_query(intent)
+    print(f"  [search] '{intent}' -> {len(titles)} title variants")
+
+    jobs = H.search_jobs_greenhouse(state["board_tokens"], titles)
+    print(f"  [search] {len(jobs)} US candidates after keyword prefilter")
     if not jobs:
-        return {"jobs": [], "error": "no_jobs", "status": "no US jobs matched"}
-    chosen = jobs[0]  # V1: first match. (V2: rank all, pick best.)
+        return {"jobs": [], "titles": titles, "error": "no_jobs",
+                "status": "no US jobs matched"}
+
+    yrs = H.years_of_experience(H.load_resume_variants()[0])
+    kept = T.judge_jobs(intent, jobs, yrs)
+    print(f"  [search] {len(kept)} survived intent + seniority judging")
+    if not kept:
+        return {"jobs": jobs, "titles": titles, "error": "no_jobs",
+                "status": "nothing passed the fit judge"}
+
+    chosen = kept[0]
     return {
-        "jobs": jobs,
-        "current_job": chosen,
-        "job_description": chosen["description"],
-        "status": f"selected: {chosen['title']} @ {chosen['company']} ({chosen['location']})",
+        "jobs": kept, "titles": titles, "current_job": chosen,
+        "job_description": chosen["description"], "attempts": 0,
+        "status": f"selected: {chosen['title']} @ {chosen['company']} "
+                  f"({chosen['location']}) — {chosen.get('verdict', '')}",
     }
 
 
@@ -98,25 +124,62 @@ def match_resumes(state: State):
             "status": f"best resume: {best['resume_id']} ({best['score']}/100)"}
 
 
+def select_projects(state: State):
+    """Pick which of the candidate's REAL projects belong on this resume.
+
+    Selection, not generation. On a retry the scorer's named gaps are passed in,
+    so the only way to raise the score is to surface a different true project -
+    never to invent a skill.
+    """
+    pool = H.load_experience_pool()
+    missing = (state.get("coverage") or {}).get("missing") if state.get("attempts") else None
+    picks = T.select_content(state["job_description"], pool, missing_skills=missing)
+    print(f"  [select] {', '.join(p['name'][:34] for p in picks)}")
+    return {"selected_projects": picks,
+            "status": f"selected {len(picks)} projects from a pool of {len(pool)}"}
+
+
 def tailor_resume(state: State):
-    jd = state["job_description"]
+    """Assemble base variant + selected projects, then reword bullets to the JD.
+
+    The LLM may only reword text that already exists: we swap by exact string
+    match, so there is no code path that appends a bullet.
+    """
     rid = state["selected_resume_id"]
     variant = next(v for v in H.load_resume_variants() if v["resume_id"] == rid)
 
-    prompt = (
-        "Tailor this resume to the JD. Rules: NEVER invent experience/skills/metrics. "
-        "Only reword a FEW existing bullets to surface relevant work. Keep lengths similar.\n\n"
-        f"JOB DESCRIPTION:\n{jd}\n\nRESUME CONTENT:\n{_resume_summary(variant)}"
-    )
-    plan: TailoringPlan = H.call_llm(prompt, structured_schema=TailoringPlan, temperature=0.3)
+    assembled = json.loads(json.dumps(variant))          # deep copy
+    assembled["projects"] = [{"name": p["name"], "bullets": list(p["bullets"])}
+                             for p in state["selected_projects"]]
 
-    tailored = json.loads(json.dumps(variant))  # deep copy
+    plan: TailoringPlan = T.H.call_llm(
+        "Tailor this resume to the JD. Rules: NEVER invent experience, skills, or "
+        "metrics. Only reword a FEW existing bullets to surface relevant work. "
+        "Keep lengths similar.\n\n"
+        f"JOB DESCRIPTION:\n{state['job_description']}\n\n"
+        f"RESUME CONTENT:\n{_resume_summary(assembled)}",
+        structured_schema=TailoringPlan, temperature=0.3)
+
     rewrites = {b.original.strip(): b.revised.strip() for b in plan.revised_bullets}
-    for job in tailored["experience"]:
+    for job in assembled["experience"]:
         job["bullets"] = [rewrites.get(b.strip(), b) for b in job["bullets"]]
-    for proj in tailored["projects"]:
+    for proj in assembled["projects"]:
         proj["bullets"] = [rewrites.get(b.strip(), b) for b in proj["bullets"]]
-    return {"tailored_resume": tailored, "status": "resume tailored: " + plan.summary_of_changes[:100]}
+
+    return {"tailored_resume": assembled,
+            "attempts": state.get("attempts", 0) + 1,
+            "status": "tailored: " + plan.summary_of_changes[:90]}
+
+
+def grade_resume(state: State):
+    """Deterministic coverage score. Never the LLM - a model grading its own
+    tailoring flatters itself and the retry loop exits at a fake 95."""
+    vocab = H.claimable_vocabulary()
+    cov = S.score_resume(state["tailored_resume"], state["job_description"], vocab)
+    print(f"  [score] {cov['score']}/100 (attempt {state['attempts']}/"
+          f"{S.MAX_ATTEMPTS})" + (f" — missing: {', '.join(cov['missing'][:5])}"
+                                  if cov["missing"] else ""))
+    return {"coverage": cov, "status": f"coverage {cov['score']}/100"}
 
 
 def render_resume(state: State):
@@ -202,17 +265,41 @@ def track_application(state: State):
 
 # ------------------------------------------------------------------ GRAPH --- #
 def _after_search(state: State) -> str:
-    """If the search found nothing, stop cleanly instead of crashing downstream."""
+    """Nothing found -> stop cleanly instead of crashing three nodes later."""
     return "end" if state.get("error") == "no_jobs" else "match_resumes"
 
 
+def _after_grade(state: State) -> str:
+    """The tailoring cycle. Loops back to SELECTION, not tailoring, so a low
+    score is fixed by choosing a better real project rather than by rewording
+    harder. Hard-capped at MAX_ATTEMPTS - no unbounded loops."""
+    cov = state.get("coverage") or {}
+    if cov.get("score", 0) >= S.TARGET_SCORE:
+        return "good_enough"
+    if state.get("attempts", 0) >= S.MAX_ATTEMPTS:
+        print(f"  [score] cap reached ({S.MAX_ATTEMPTS} attempts), continuing at "
+              f"{cov.get('score')}/100")
+        return "good_enough"
+
+    # Only retry if an unused real project would actually close a gap. Otherwise
+    # the candidate simply lacks that skill, and looping again would either
+    # change nothing or pressure the model to invent it.
+    used = {p["id"] for p in state.get("selected_projects", []) if "id" in p}
+    reachable = S.retry_could_help(cov.get("missing", []),
+                                   H.load_experience_pool(), used)
+    if not reachable:
+        print(f"  [score] no unused project covers {', '.join(cov.get('missing', [])[:4])}"
+              f" — stopping at {cov.get('score')}/100 rather than inventing")
+        return "good_enough"
+    print(f"  [score] retrying — unused projects cover: {', '.join(reachable[:4])}")
+    return "retry"
+
+
 def _make_checkpointer():
-    """SQLite checkpointing so a crash (or the human pause) resumes mid-run.
+    """SQLite checkpointing so a crash resumes mid-run.
 
     NOTE: SqliteSaver.from_conn_string() is a *context manager*, so it can't be
-    handed straight to compile(). We own the connection instead and keep it open
-    for the life of the process. check_same_thread=False because LangGraph may
-    touch it from a worker thread.
+    handed straight to compile(). We own the connection instead.
     """
     conn = sqlite3.connect(str(H.CHECKPOINT_DB), check_same_thread=False)
     return SqliteSaver(conn)
@@ -220,23 +307,32 @@ def _make_checkpointer():
 
 def build_graph():
     g = StateGraph(State)
-    g.add_node("search_jobs", search_jobs)
-    g.add_node("match_resumes", match_resumes)
-    g.add_node("tailor_resume", tailor_resume)
-    g.add_node("render_resume", render_resume)
-    g.add_node("prepare_application", prepare_application)
-    g.add_node("human_review", human_review)
-    g.add_node("track_application", track_application)
+    for name, fn in [
+        ("search_jobs", search_jobs), ("match_resumes", match_resumes),
+        ("select_projects", select_projects), ("tailor_resume", tailor_resume),
+        ("grade_resume", grade_resume), ("render_resume", render_resume),
+        ("prepare_application", prepare_application),
+        ("human_review", human_review), ("track_application", track_application),
+    ]:
+        g.add_node(name, fn)
 
     g.add_edge(START, "search_jobs")
     g.add_conditional_edges("search_jobs", _after_search,
                             {"match_resumes": "match_resumes", "end": END})
-    g.add_edge("match_resumes", "tailor_resume")
-    g.add_edge("tailor_resume", "render_resume")
+    g.add_edge("match_resumes", "select_projects")
+    g.add_edge("select_projects", "tailor_resume")
+    g.add_edge("tailor_resume", "grade_resume")
+
+    # THE CYCLE: grade -> (retry) -> select_projects -> tailor -> grade -> ...
+    g.add_conditional_edges("grade_resume", _after_grade,
+                            {"retry": "select_projects",
+                             "good_enough": "render_resume"})
+
     g.add_edge("render_resume", "prepare_application")
     g.add_edge("prepare_application", "human_review")
     g.add_edge("human_review", "track_application")
     g.add_edge("track_application", END)
 
-    # Pause before human_review so you can auto-fill the form + review before submit.
-    return g.compile(checkpointer=_make_checkpointer(), interrupt_before=["human_review"])
+    # Pause before human_review so you can review the filled form before submit.
+    return g.compile(checkpointer=_make_checkpointer(),
+                     interrupt_before=["human_review"])
