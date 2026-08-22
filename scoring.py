@@ -18,8 +18,9 @@ import json
 import re
 from pathlib import Path
 
-TARGET_SCORE = 85       # loop exits at or above this
-MAX_ATTEMPTS = 3        # hard cap - never loop unbounded
+TARGET_SCORE = 85          # tailoring loop exits at or above this
+MIN_SCORE_TO_APPLY = 70    # below this the job is a bad fit - skip it entirely
+MAX_ATTEMPTS = 3           # hard cap - never loop unbounded
 
 
 # --------------------------------------------------------------------------- #

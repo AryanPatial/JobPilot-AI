@@ -32,6 +32,8 @@ class State(TypedDict, total=False):
     resume_scores: list
     selected_resume_id: Optional[str]
 
+    job_index: int                   # which of `jobs` we're on
+    skipped_jobs: list               # jobs abandoned for poor JD coverage
     selected_projects: list          # chosen from the experience pool
     tailored_resume: Optional[dict]
     coverage: Optional[dict]         # deterministic score + named gaps
@@ -103,6 +105,7 @@ def search_jobs(state: State):
     return {
         "jobs": kept, "titles": titles, "current_job": chosen,
         "job_description": chosen["description"], "attempts": 0,
+        "job_index": 0, "skipped_jobs": [],
         "status": f"selected: {chosen['title']} @ {chosen['company']} "
                   f"({chosen['location']}) — {chosen.get('verdict', '')}",
     }
@@ -245,6 +248,36 @@ def prepare_application(state: State):
             "status": "application package prepared"}
 
 
+def next_job(state: State):
+    """This job scored too low to be worth applying to - move to the next one.
+
+    A poor coverage score after the tailoring loop means the JD genuinely
+    doesn't line up with anything real in the candidate's history. Applying
+    anyway wastes an application; the honest move is to skip it.
+    """
+    jobs = state["jobs"]
+    idx = state.get("job_index", 0) + 1
+    cov = state.get("coverage") or {}
+    skipped = list(state.get("skipped_jobs", []))
+    skipped.append({"title": state["current_job"]["title"],
+                    "company": state["current_job"]["company"],
+                    "score": cov.get("score")})
+    print(f"  [skip] {state['current_job']['title'][:46]} scored "
+          f"{cov.get('score')}/100 (< {S.MIN_SCORE_TO_APPLY}) — trying the next job")
+
+    if idx >= len(jobs):
+        return {"skipped_jobs": skipped, "error": "no_suitable_jobs",
+                "status": f"all {len(jobs)} jobs scored below "
+                          f"{S.MIN_SCORE_TO_APPLY}/100"}
+
+    nxt = jobs[idx]
+    print(f"  [next] {nxt['title'][:50]} @ {nxt['company']}")
+    return {"job_index": idx, "current_job": nxt,
+            "job_description": nxt["description"],
+            "attempts": 0, "coverage": None, "skipped_jobs": skipped,
+            "status": f"moved to {nxt['title']} @ {nxt['company']}"}
+
+
 def human_review(state: State):
     # Reaching here means you resumed the graph = you approved after review.
     return {"status": "approved by human"}
@@ -270,29 +303,48 @@ def _after_search(state: State) -> str:
 
 
 def _after_grade(state: State) -> str:
-    """The tailoring cycle. Loops back to SELECTION, not tailoring, so a low
-    score is fixed by choosing a better real project rather than by rewording
-    harder. Hard-capped at MAX_ATTEMPTS - no unbounded loops."""
+    """Three-way routing after scoring.
+
+      >= TARGET_SCORE        -> good enough, go apply
+      retry budget left and
+      an unused real project
+      would close the gap    -> retry (loops back to SELECTION, not tailoring,
+                                so the fix is a better true project, never a
+                                reworded claim)
+      exhausted, still
+      < MIN_SCORE_TO_APPLY   -> skip this job entirely and try the next one
+      exhausted, but >= min  -> good enough, go apply
+    """
     cov = state.get("coverage") or {}
-    if cov.get("score", 0) >= S.TARGET_SCORE:
-        return "good_enough"
-    if state.get("attempts", 0) >= S.MAX_ATTEMPTS:
-        print(f"  [score] cap reached ({S.MAX_ATTEMPTS} attempts), continuing at "
-              f"{cov.get('score')}/100")
+    score = cov.get("score", 0)
+
+    if score >= S.TARGET_SCORE:
         return "good_enough"
 
-    # Only retry if an unused real project would actually close a gap. Otherwise
-    # the candidate simply lacks that skill, and looping again would either
-    # change nothing or pressure the model to invent it.
-    used = {p["id"] for p in state.get("selected_projects", []) if "id" in p}
-    reachable = S.retry_could_help(cov.get("missing", []),
-                                   H.load_experience_pool(), used)
-    if not reachable:
-        print(f"  [score] no unused project covers {', '.join(cov.get('missing', [])[:4])}"
-              f" — stopping at {cov.get('score')}/100 rather than inventing")
-        return "good_enough"
-    print(f"  [score] retrying — unused projects cover: {', '.join(reachable[:4])}")
-    return "retry"
+    if state.get("attempts", 0) < S.MAX_ATTEMPTS:
+        # Only retry if an unused real project would actually close a gap.
+        # Otherwise the candidate simply lacks that skill, and looping again
+        # would either change nothing or pressure the model to invent it.
+        used = {p["id"] for p in state.get("selected_projects", []) if "id" in p}
+        reachable = S.retry_could_help(cov.get("missing", []),
+                                       H.load_experience_pool(), used)
+        if reachable:
+            print(f"  [score] retrying — unused projects cover: "
+                  f"{', '.join(reachable[:4])}")
+            return "retry"
+        print(f"  [score] no unused project covers "
+              f"{', '.join(cov.get('missing', [])[:4])} — not retrying")
+
+    if score < S.MIN_SCORE_TO_APPLY:
+        return "next_job"
+
+    print(f"  [score] {score}/100 — above the {S.MIN_SCORE_TO_APPLY} floor, applying")
+    return "good_enough"
+
+
+def _after_next_job(state: State) -> str:
+    """Ran out of jobs to try, or got a fresh one to score."""
+    return "end" if state.get("error") == "no_suitable_jobs" else "select_projects"
 
 
 def _make_checkpointer():
@@ -310,7 +362,8 @@ def build_graph():
     for name, fn in [
         ("search_jobs", search_jobs), ("match_resumes", match_resumes),
         ("select_projects", select_projects), ("tailor_resume", tailor_resume),
-        ("grade_resume", grade_resume), ("render_resume", render_resume),
+        ("grade_resume", grade_resume), ("next_job", next_job),
+        ("render_resume", render_resume),
         ("prepare_application", prepare_application),
         ("human_review", human_review), ("track_application", track_application),
     ]:
@@ -323,10 +376,14 @@ def build_graph():
     g.add_edge("select_projects", "tailor_resume")
     g.add_edge("tailor_resume", "grade_resume")
 
-    # THE CYCLE: grade -> (retry) -> select_projects -> tailor -> grade -> ...
+    # CYCLE 1 (tailoring): grade -> select_projects -> tailor -> grade ...
+    # CYCLE 2 (job search): grade -> next_job -> select_projects -> ...
     g.add_conditional_edges("grade_resume", _after_grade,
                             {"retry": "select_projects",
+                             "next_job": "next_job",
                              "good_enough": "render_resume"})
+    g.add_conditional_edges("next_job", _after_next_job,
+                            {"select_projects": "select_projects", "end": END})
 
     g.add_edge("render_resume", "prepare_application")
     g.add_edge("prepare_application", "human_review")

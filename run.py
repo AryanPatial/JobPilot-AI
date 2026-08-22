@@ -28,9 +28,9 @@ COMPANY_BOARDS = ["reddit", "anthropic", "scaleai", "chime", "gusto",
                   "figma", "twilio", "affirm"]
 
 AUTO_FILL_BROWSER = True   # False = prepare only, no browser
-USE_LLM_CHOOSER = True     # LLM picks dropdowns the rules can't resolve.
-                           # Never consulted for legal/EEO fields — see
-                           # apply.LLM_FORBIDDEN.
+USE_LLM_CHOOSER = True     # LLM picks dropdowns the rules can't resolve AND
+                           # writes free-text answers. Never consulted for
+                           # legal/EEO fields — see apply.LLM_FORBIDDEN.
 
 # A fresh thread id per run. Reusing one makes LangGraph resume the PREVIOUS
 # run's checkpoint instead of starting a new search.
@@ -44,8 +44,11 @@ def main():
     print("\n=== SEARCHING + PREPARING (will pause before you submit) ===\n")
     state = app.invoke({"board_tokens": COMPANY_BOARDS, "intent": INTENT}, THREAD)
 
-    if state.get("error") == "no_jobs":
-        print("No US jobs matched. Try different company boards or titles.")
+    if state.get("error") in ("no_jobs", "no_suitable_jobs"):
+        print(f"\nStopped: {state.get('status')}")
+        for sk in state.get("skipped_jobs", []):
+            print(f"   skipped {sk['title'][:46]} — {sk['score']}/100")
+        print("Try a different INTENT, more boards, or add projects to the pool.")
         return
 
     job = state["current_job"]
@@ -60,17 +63,22 @@ def main():
     print(f"  Projects: {', '.join(p['name'][:34] for p in state['selected_projects'])}")
     print(f"  JD coverage: {cov.get('score')}/100 after {state.get('attempts')} "
           f"tailoring pass(es)")
+    for sk in state.get("skipped_jobs", []):
+        print(f"  (skipped {sk['title'][:42]} — {sk['score']}/100)")
 
     # ---- Auto-fill the real form (browser stays open for you) ----
     handle = None
     if AUTO_FILL_BROWSER:
         print("\n=== OPENING + FILLING THE APPLICATION FORM ===")
-        chooser = None
+        chooser = answerer = None
         if USE_LLM_CHOOSER:
             summary = llm_tasks.profile_summary()
+            context = f"{job['title']} at {job['company']}. {state['job_description'][:400]}"
             chooser = lambda label, options: llm_tasks.llm_choose(label, options, summary)
+            answerer = lambda label: llm_tasks.llm_answer(label, summary, context)
         handle = apply.fill_greenhouse_form(job["url"], state["application_fields"],
-                                            state["open_questions"], chooser=chooser)
+                                            state["open_questions"],
+                                            chooser=chooser, answerer=answerer)
         if handle.get("error"):
             print("  ", handle["error"])
     else:

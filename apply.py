@@ -417,14 +417,18 @@ def _chooser_for(key: str, chooser):
 
 
 def fill_greenhouse_form(url: str, fields: dict, open_questions: list,
-                         chooser=None) -> dict:
+                         chooser=None, answerer=None) -> dict:
     """Open the form, fill what we can, upload the resume, and leave the browser
     OPEN for you to review + submit. Returns a report of filled/skipped fields.
 
-    chooser: optional callback (label, options) -> index|None, consulted ONLY
-    when the deterministic rules find no confident match, and never for the
-    fields in LLM_FORBIDDEN. Passing it in keeps this module free of any LLM
-    dependency - it still imports nothing from the rest of the project.
+    chooser:  callback (label, options) -> index|None, consulted ONLY when the
+              deterministic rules find no confident match, and never for a
+              field in LLM_FORBIDDEN.
+    answerer: callback (label) -> text|None, for free-text questions the rules
+              have no value for. Never called for a NEVER_ANSWER label.
+
+    Both are passed in rather than imported, which keeps this module free of any
+    LLM dependency - it still imports nothing from the rest of the project.
     """
     try:
         from playwright.sync_api import sync_playwright
@@ -486,19 +490,47 @@ def fill_greenhouse_form(url: str, fields: dict, open_questions: list,
         if ok:
             seen.add(key)
 
-    # 3) The drafted prose answer, into the first empty textarea.
+    # 3) Free-text questions. The pre-drafted "why this role" goes in first,
+    #    then the answerer writes anything else that is still blank.
+    answered: list[str] = []
     if open_questions:
-        answer = open_questions[0].get("drafted_answer", "")
+        draft = open_questions[0].get("drafted_answer", "")
         placed = False
         for ta in page.query_selector_all("textarea"):
             try:
                 if not (ta.input_value() or "").strip():
-                    ta.fill(answer)
+                    ta.fill(draft)
+                    answered.append("why_this_role")
                     placed = True
                     break
             except Exception:
                 continue
-        (filled if placed else skipped).append("why_this_role")
+        if not placed:
+            skipped.append("why_this_role")
+
+    if answerer:
+        for ctrl in _scan_controls(page):
+            label = ctrl["label"]
+            if (ctrl["hidden"] or ctrl.get("combo")
+                    or ctrl["tag"] not in ("textarea", "input")
+                    or ctrl["type"] in ("file", "hidden", "submit", "button",
+                                        "checkbox", "radio", "tel", "email")
+                    or not label or len(label) < 12
+                    or IGNORE_LABEL.search(label) or NEVER_ANSWER.search(label)
+                    or _match_key(label)):        # rules already own this field
+                continue
+            try:
+                el = page.query_selector(f"[data-jaa='{ctrl['idx']}']")
+                if el is None or (el.input_value() or "").strip():
+                    continue                      # already filled - leave it
+                text = answerer(label)
+                if text:
+                    el.fill(text)
+                    answered.append(f"{label[:42]} (written)")
+            except Exception:
+                continue
+
+    filled.extend(answered)
 
     # 4) Report. Anything not confidently matched is YOUR job during review.
     print("\n[apply] Filled:")

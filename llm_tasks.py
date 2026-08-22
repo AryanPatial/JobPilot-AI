@@ -271,3 +271,57 @@ def profile_summary() -> str:
         f"Gender: {one(ans['gender'])}. Race/ethnicity: {one(ans['race_ethnicity'])}. "
         f"Not a veteran. No disability."
     )
+
+
+# ============================================================= 5. ANSWER ==== #
+class WrittenAnswer(BaseModel):
+    answer: str = Field(description="The answer text. Empty string if it cannot "
+                                    "be answered truthfully from the profile.")
+    confident: bool = Field(description="False if this needs the human")
+
+
+def llm_answer(label: str, profile_summary: str, job_context: str = "",
+               *, max_words: int = 90) -> str | None:
+    """Write a free-text application answer on the candidate's behalf.
+
+    Used for open questions the rules have no value for - "why this role",
+    "describe a project", "what interests you about us". Never used for legal
+    attestations: apply.NEVER_ANSWER filters those out before we get here, and
+    apply.LLM_FORBIDDEN keeps the attested dropdowns rules-only.
+
+    Grounded strictly in the profile summary and the JD. Returns None rather
+    than guessing when the question needs a fact we don't hold.
+    """
+    key = json.dumps(["ANSWER", label.strip().lower(), job_context[:60]], sort_keys=True)
+    cache = _cache()
+    if key in cache:
+        return cache[key]
+
+    try:
+        result: WrittenAnswer = H.call_llm(
+            "Write a job-application answer for this candidate. Truthful, specific, "
+            "first person, no hype, no invented facts.\n\n"
+            f"CANDIDATE:\n{profile_summary}\n\n"
+            f"ROLE CONTEXT: {job_context[:600]}\n\n"
+            f"QUESTION: {label}\n\n"
+            f"Keep it under {max_words} words. Ground every claim in the candidate "
+            "details above - never invent an employer, a metric, a technology, or a "
+            "personal circumstance. If the question asks for something not present "
+            "in the candidate details (a salary figure, a date, a reference, a "
+            "legal declaration), set confident=false and return an empty answer.",
+            structured_schema=WrittenAnswer, temperature=0.3)
+    except Exception as exc:
+        print(f"  [answer] LLM unavailable: {str(exc)[:70]}")
+        return None
+
+    text = (result.answer or "").strip()
+    out = text if (result.confident and text) else None
+    cache[key] = out
+    try:
+        _CHOICE_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _CHOICE_CACHE_PATH.write_text(json.dumps(cache, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+    if out:
+        print(f"  [answer] {label[:44]!r} -> {out[:60]}...")
+    return out
