@@ -272,50 +272,84 @@ AMBIGUOUS_ABBR = {"al", "ar", "ca", "co", "de", "ga", "id", "il", "in", "ky",
                   "pa", "sc", "sd", "tn", "va"}
 
 # Bare 2-letter country codes that are NOT US states, but commonly appear.
-NON_US_CODES = {"uk", "gb", "eu", "ie", "fr", "es", "pt", "nl", "be", "ch", "at",
+NON_US_REGIONS = {
+    "ontario", "quebec", "alberta", "manitoba", "saskatchewan", "nova scotia",
+    "british columbia", "newfoundland", "new brunswick",
+    "england", "scotland", "wales", "northern ireland",
+    "new south wales", "queensland", "victoria, australia", "bavaria", "catalonia",
+    "maharashtra", "karnataka", "telangana", "tamil nadu", "haryana",
+}
+NON_US_CODES = {"uk", "gb", "gbr", "eu", "ie", "irl", "can", "mex", "aus", "nzl",
+                "ind", "deu", "fra", "esp", "prt", "nld", "bel", "che", "aut",
+                "pol", "cze", "rou", "grc", "tur", "dnk", "fin", "nor", "swe",
+                "bra", "chn", "jpn", "jpn", "kor", "sgp", "phl", "isr", "zaf",
+                "fr", "es", "pt", "nl", "be", "ch", "at",
                 "pl", "cz", "ro", "gr", "tr", "dk", "fi", "no", "se", "br", "cn",
                 "jp", "kr", "sg", "my", "th", "vn", "ph", "tw", "hk", "au", "nz",
                 "ae", "za", "cr", "mx"}
 
 
-def is_us_location(location: str) -> bool:
-    """STRICT US-only. True only if the location clearly resolves to the US.
+_LOC_SPLIT = re.compile(r"[;|/\n]| or |, +and +")
 
-    Order matters:
-      1. Any non-US country named/coded anywhere -> drop (a "New York or London"
-         posting is ambiguous, and we drop ambiguous).
-      2. An explicit US marker or a full state name -> keep.
-      3. A state abbreviation -> keep, unless that abbreviation is also a country
-         code AND the city is a known non-US hub ("Berlin, DE", "Toronto, CA").
-    Bare 'Remote', 'n/a', and empty all return False.
+
+def _part_is_us(text: str) -> bool:
+    """Is ONE location string a US location?
+
+    Order is the whole trick. Every non-US signal is checked BEFORE any US
+    signal, because a multi-location posting like
+    "New York, NY; Toronto, Ontario, CAN - Remote" contains a perfectly good
+    US marker - and if we look for that first we accept the Canadian half too.
     """
-    if not location:
+    t = text.lower().strip()
+    if not t:
         return False
-    text = location.lower().strip()
-    tokens = set(re.split(r"[^a-z.]+", text)) - {""}
+    tokens = set(re.split(r"[^a-z.]+", t)) - {""}
 
-    # 1. Unambiguous non-US signal.
-    for country in NON_US_COUNTRIES:
-        if country in text:
-            return False
+    # 1. Anything explicitly non-US disqualifies this part.
+    if any(c in t for c in NON_US_COUNTRIES):
+        return False
+    if any(r in t for r in NON_US_REGIONS):
+        return False
     if tokens & NON_US_CODES:
         return False
 
     # 2. Unambiguous US signal.
-    if tokens & {"us", "usa", "u.s.", "u.s.a."} or "united states" in text:
+    if tokens & {"us", "usa", "u.s.", "u.s.a."} or "united states" in t:
         return True
-    for state in US_STATES:
-        if state in text:
-            return True
+    if any(state in t for state in US_STATES):
+        return True
 
-    # 3. State abbreviation as its own token, so "or" (Oregon) doesn't match
+    # 3. A state abbreviation as its own token, so "or" (Oregon) doesn't match
     #    inside "coordinator" and "in" doesn't match inside "engineering".
     hits = tokens & US_STATE_ABBR
     if not hits:
         return False
     if hits - AMBIGUOUS_ABBR:
-        return True                      # e.g. NY, TX, WA — nothing to confuse
-    return not any(city in text for city in NON_US_CITIES)
+        return True            # NH, TX, NY - nothing to confuse them with
+
+    # 4. Only an abbreviation that doubles as a country code (CA/IN/DE/IL...).
+    #    The city breaks the tie: "Berlin, DE" is Germany, "Dover, DE" is not.
+    return not any(city in t for city in NON_US_CITIES)
+
+
+def us_locations(location: str) -> list[str]:
+    """The US-only parts of a possibly multi-location posting.
+
+    "SF, CA;New York, NY;Toronto, Ontario, CAN" -> ["SF, CA", "New York, NY"]
+    """
+    if not location:
+        return []
+    return [p.strip() for p in _LOC_SPLIT.split(location) if _part_is_us(p)]
+
+
+def is_us_location(location: str) -> bool:
+    """STRICT US-only: true when at least one listed location is unambiguously
+    in the US. A posting offering both New York and Toronto is kept (you can
+    take it in New York) but search_jobs_greenhouse rewrites its location to
+    the US parts, so a non-US city is never shown or applied to. A posting with
+    no US option at all, or only an ambiguous one ('Remote', 'n/a'), is dropped.
+    """
+    return bool(us_locations(location))
 
 
 def search_jobs_greenhouse(board_tokens: list[str], titles: list[str]) -> list[dict]:
@@ -346,7 +380,7 @@ def search_jobs_greenhouse(board_tokens: list[str], titles: list[str]) -> list[d
                 "job_id": str(j.get("id")),
                 "title": title,
                 "company": j.get("company_name") or token,
-                "location": loc,
+                "location": ", ".join(us_locations(loc)) or loc,
                 "url": j.get("absolute_url"),
                 "description": _strip_html(j.get("content", "")),
             })
