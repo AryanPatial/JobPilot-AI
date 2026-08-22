@@ -38,7 +38,7 @@ PROFILE_PATH = DATA_DIR / "candidate_profile.json"
 OUTPUT_RESUMES_DIR.mkdir(parents=True, exist_ok=True)
 
 import os
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
 
 
 LLM_TIMEOUT_SECONDS = 150

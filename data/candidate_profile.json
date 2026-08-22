@@ -35,19 +35,29 @@
     "willing_to_relocate": "Yes",
     "salary_expectation": "AUTO",
     "earliest_start_date": "AUTO",
-    "gender": "Cisgender man",
+    "gender": [
+      "Cisgender man",
+      "Male"
+    ],
     "race_ethnicity": [
       "South Asian",
       "Asian"
     ],
-    "veteran_status": "I am not a protected veteran",
+    "veteran_status": [
+      "I am not a protected veteran",
+      "I have never served in the military",
+      "I am not a veteran"
+    ],
     "disability_status": "No, I don't have a disability",
     "how_did_you_hear": "Company careers page"
   },
   "screening_answers": {
     "_note": "Exact option text so react-select matches. A list means 'try these in order' (first match wins). The consent checkbox is never ticked.",
     "used_product": "No",
-    "worked_here_before": "I have never worked at Robinhood",
+    "worked_here_before": [
+      "No",
+      "I have never worked here"
+    ],
     "willing_to_work_from_office": "Yes",
     "pronouns": "He / Him",
     "preferred_office_location": "New York, NY",
