@@ -1,11 +1,30 @@
-langgraph>=1.0
-langgraph-checkpoint-sqlite>=2.0
-langchain>=1.0
-langchain-google-genai>=2.0
-pydantic>=2.0
-python-dotenv>=1.0
+# Orchestration — the graph, its cycles, and the human-in-the-loop interrupt
+langgraph>=1.2
+langgraph-checkpoint-sqlite>=3.1
+
+# LLM access. Both providers sit behind helpers.call_llm(); LLM_PROVIDER in
+# .env picks one. langchain-openai is the active default (gpt-4o-mini).
+langchain>=1.3
+langchain-openai>=1.6
+langchain-google-genai>=4.3
+
+# Structured LLM output — every model reply is validated against a schema
+pydantic>=2.13
+
+# Job search
 requests>=2.31
+
+# Resume PDF: Jinja2 fills the HTML template, WeasyPrint renders it.
+# WeasyPrint needs system libs — macOS: brew install pango
+#                                Ubuntu: apt-get install libpango-1.0-0 libpangocairo-1.0-0
 jinja2>=3.1
 weasyprint>=62.0
+
+# Excel application tracker
 openpyxl>=3.1
+
+# Browser automation. After installing, also run: playwright install chromium
 playwright>=1.40
+
+# .env loading
+python-dotenv>=1.0

@@ -38,14 +38,18 @@ is checkpointed to SQLite so a crash resumes instead of starting over.
 python3 -m venv venv
 ./venv/bin/pip install -r requirements.txt
 ./venv/bin/playwright install chromium
-cp .env.example .env          # add your key from aistudio.google.com
+cp .env.example .env
 ```
+
+Then put an API key in `.env`. The default provider is OpenAI
+(`gpt-4o-mini`); set `LLM_PROVIDER=gemini` to use Google instead — that switch
+is the only change needed, since every model call goes through `call_llm()`.
 
 WeasyPrint needs system libraries:
 `brew install pango` (macOS) · `apt-get install libpango-1.0-0 libpangocairo-1.0-0` (Ubuntu)
 
-Then edit `data/candidate_profile.json` — your name, email, and application
-answers all live there.
+Finally, edit `data/candidate_profile.json` — your name, email, and every
+application answer live there.
 
 ## Run
 
