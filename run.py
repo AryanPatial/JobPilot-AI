@@ -30,9 +30,11 @@ COMPANY_BOARDS = ["reddit", "anthropic", "scaleai", "chime", "gusto",
 AUTO_FILL_BROWSER = True   # False = prepare only, no browser
 SLOW_MO_MS = 400           # pause between browser actions so you can watch it
                            # fill. 0 = instant.
-USE_LLM_CHOOSER = True     # LLM picks dropdowns the rules can't resolve AND
-                           # writes free-text answers. Never consulted for
-                           # legal/EEO fields — see apply.LLM_FORBIDDEN.
+USE_LLM_CHOOSER = True     # GPT writes free-text answers and picks dropdowns.
+LLM_FIRST = True           # True  = GPT decides every dropdown, handed your
+                           #         profile value as the ground truth, with the
+                           #         rules as fallback.
+                           # False = rules decide, GPT only where they can't.
 
 # A fresh thread id per run. Reusing one makes LangGraph resume the PREVIOUS
 # run's checkpoint instead of starting a new search.
@@ -76,17 +78,25 @@ def main():
         if USE_LLM_CHOOSER:
             summary = llm_tasks.profile_summary()
             context = f"{job['title']} at {job['company']}. {state['job_description'][:400]}"
-            chooser = lambda label, options: llm_tasks.llm_choose(label, options, summary)
+            chooser = lambda label, options, intended=None: llm_tasks.llm_choose(
+                label, options, summary, intended)
             answerer = lambda label: llm_tasks.llm_answer(label, summary, context)
         before = llm_tasks.CALLS
-        handle = apply.fill_greenhouse_form(job["url"], state["application_fields"],
-                                            state["open_questions"],
-                                            chooser=chooser, answerer=answerer,
-                                            slow_mo=SLOW_MO_MS)
-        used = llm_tasks.CALLS - before
-        print(f"\n  Form filling used {used} LLM call(s) — everything else came "
-              f"from rules + your profile file.")
-        if handle.get("error"):
+        try:
+            handle = apply.fill_greenhouse_form(
+                job["url"], state["application_fields"], state["open_questions"],
+                chooser=chooser, answerer=answerer, slow_mo=SLOW_MO_MS,
+                llm_first=LLM_FIRST)
+        except Exception as exc:
+            # Belt and braces: even if the browser layer fails outright we must
+            # still reach the human checkpoint below rather than exit, because
+            # exiting is what closes the window.
+            import traceback; traceback.print_exc()
+            print(f"\n  Auto-fill failed: {type(exc).__name__}. "
+                  f"Fill the form by hand if a window is open.")
+            handle = None
+        print(f"\n  Form filling used {llm_tasks.CALLS - before} LLM call(s).")
+        if handle and handle.get("error"):
             print("  ", handle["error"])
     else:
         print("\n(Auto-fill off. Prepared fields:)")

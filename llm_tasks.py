@@ -221,31 +221,38 @@ def _cache() -> dict:
     return _choice_cache
 
 
-def llm_choose(label: str, options: list[str], profile_summary: str) -> int | None:
-    """Last-resort dropdown chooser: the deterministic rules found no confident
-    match, so ask the model which option fits.
+def llm_choose(label: str, options: list[str], profile_summary: str,
+               intended: str | None = None) -> int | None:
+    """Ask the model which option to select.
 
-    Returns an INDEX, never text - so there is no fuzzy string matching on the
-    way back and the caller can only ever select a real option.
+    `intended` is the value from candidate_profile.json for this field, when we
+    have one. Passing it in is what keeps this safe: the model is matching a
+    known fact to the form's wording, not deciding the fact. Given
+    "I am not a protected veteran" it picks "I have never served in the
+    military"; it is never left to guess whether the candidate is a veteran.
 
-    Cached on (label, options) in output/choices.json, because the same company
-    asks the same question on every run.
+    Returns an INDEX, so there is no fuzzy string matching on the way back and
+    only a real option can ever be selected. -1 / None means leave it blank.
     """
     if not options:
         return None
-    key = json.dumps([label.strip().lower(), options], sort_keys=True)
+    key = json.dumps([label.strip().lower(), options, intended], sort_keys=True)
     cache = _cache()
     if key in cache:
         return cache[key]
 
     listing = "\n".join(f"{i}. {o}" for i, o in enumerate(options))
+    known = (f"\nTHE CANDIDATE'S ANSWER TO THIS, FROM THEIR PROFILE: {intended!r}\n"
+             "Select the option that expresses exactly this. Do not substitute a "
+             "different meaning, and never pick an option that contradicts it.\n"
+             if intended else "")
     try:
         _count()
         result: OptionChoice = H.call_llm(
             "Choose the dropdown option that best answers a job-application question "
             "for this candidate.\n\n"
             f"CANDIDATE:\n{profile_summary}\n\n"
-            f"QUESTION: {label}\n\nOPTIONS:\n{listing}\n\n"
+            f"QUESTION: {label}\n{known}\nOPTIONS:\n{listing}\n\n"
             "Reply with the index number only. If no option is truthful for this "
             "candidate, return -1 — a blank field is always better than a wrong "
             "answer on a job application.",
