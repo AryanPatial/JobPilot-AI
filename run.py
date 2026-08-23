@@ -148,7 +148,8 @@ def main():
     print("\n" + "=" * 66)
     print("REVIEW THE BROWSER, FIX ANY SKIPPED FIELDS, THEN CLICK SUBMIT YOURSELF.")
     print("=" * 66)
-    if not confirm_submitted():
+    submitted = confirm_submitted()
+    if not submitted:
         print("\nNot logged. The application was NOT recorded as submitted.")
         return
 
@@ -160,6 +161,8 @@ def main():
             pass
 
     # ---- Resume the graph to record the application ----
+    # You confirmed you submitted it, so it goes in the sheet as Applied.
+    app.update_state(thread, {"submitted_status": "Applied"})
     final = app.invoke(None, thread)
     print("\n=== DONE ===")
     print("STATUS: logged to your tracker. (You are the one who clicked Submit.)")

@@ -44,6 +44,7 @@ class State(TypedDict, total=False):
     open_questions: Optional[list]
 
     status: str
+    submitted_status: str            # "Applied" once you confirm you submitted
     error: Optional[str]
 
 
@@ -90,6 +91,15 @@ def search_jobs(state: State):
 
     jobs = H.search_jobs_greenhouse(state["board_tokens"], titles)
     print(f"  [search] {len(jobs)} US candidates after keyword prefilter")
+
+    # Don't offer a job that's already in the tracker as Applied. Filtering here
+    # rather than later means we never spend a judge or tailoring call on it.
+    done = H.already_applied()
+    if done:
+        before = len(jobs)
+        jobs = [j for j in jobs if (j.get("url") or "").split("?")[0] not in done]
+        if before != len(jobs):
+            print(f"  [search] {before - len(jobs)} already applied to — skipped")
     if not jobs:
         return {"jobs": [], "titles": titles, "error": "no_jobs",
                 "status": "no US jobs matched"}
@@ -293,7 +303,7 @@ def track_application(state: State):
         resume_used=Path(state["resume_pdf_path"]).name,
         match_score=scores.get(state["selected_resume_id"]),
         coverage=cov.get("score"), attempts=state.get("attempts"),
-        job_url=job["url"], status="Prepared",
+        job_url=job["url"], status=state.get("submitted_status", "Prepared"),
     )
     return {"status": f"logged to tracker: {path}"}
 

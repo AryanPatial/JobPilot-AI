@@ -15,14 +15,22 @@ cares whether it's talking to GPT or Gemini.
 from __future__ import annotations
 
 import json
+import re
 from typing import List
 
 from pydantic import BaseModel, Field
 
 import helpers as H
 
-# How many pre-filtered jobs we send to the judge in one call.
-JUDGE_BATCH_LIMIT = 40
+# How many jobs go into ONE judging call. Every candidate is judged - this is
+# the chunk size, not a cap. Truncating instead of chunking meant a search that
+# returned 105 candidates only ever considered the first 40, and because boards
+# come back roughly alphabetically those 40 were nearly all Staff/Senior roles,
+# so almost nothing survived and the "try the next job" cycle had nowhere to go.
+JUDGE_CHUNK = 40
+
+# Stop once we have this many good jobs - no point paying to judge the rest.
+ENOUGH_MATCHES = 12
 
 # Every LLM call made this run, so the terminal can show how much of the form
 # was the model and how much was deterministic rules.
@@ -97,45 +105,57 @@ class JobVerdicts(BaseModel):
 
 
 def judge_jobs(intent: str, jobs: list[dict], years_experience: float) -> list[dict]:
-    """ONE call that judges every candidate job for both intent fit and
-    seniority fit (spec items 1 and 3, batched together).
+    """Judge EVERY candidate for intent fit and seniority fit (spec items 1
+    and 3), in chunks of JUDGE_CHUNK.
 
     Keyword matching cannot see that a "Staff ML Engineer, 8+ years" posting is
     a bad use of an application when you have ~2 years. This can.
 
-    Returns the input jobs, each with `verdict` attached, keeping only those the
-    model accepted on both axes.
+    Returns the jobs that passed on both axes, each with `verdict` attached.
+    Stops early once ENOUGH_MATCHES have been found.
     """
+    kept: list[dict] = []
     if not jobs:
-        return []
-    batch = jobs[:JUDGE_BATCH_LIMIT]
+        return kept
 
-    listing = "\n".join(
-        f"{i}. {j['title']}  [{j.get('location', '')}]  — {_one_line(j)}"
-        for i, j in enumerate(batch))
+    for start in range(0, len(jobs), JUDGE_CHUNK):
+        chunk = jobs[start:start + JUDGE_CHUNK]
+        listing = "\n".join(
+            f"{i}. {j['title']}  [{j.get('location', '')}]  — {_one_line(j)}"
+            for i, j in enumerate(chunk))
 
-    _count()
-    result: JobVerdicts = H.call_llm(
-        "You screen job postings for a candidate.\n\n"
-        f"CANDIDATE INTENT: {intent}\n"
-        f"CANDIDATE EXPERIENCE: about {years_experience} years (recent graduate level)\n\n"
-        f"JOBS:\n{listing}\n\n"
-        "For EVERY job above return a verdict with its index.\n"
-        "  matches_intent — does the actual role fit the intent? Reject postings that "
-        "merely mention the keywords (e.g. a Sales role at an AI company).\n"
-        "  seniority_ok  — plausible for this experience level? Reject Staff, Principal, "
-        "Lead, Director, Manager, and anything demanding 5+ years. Accept new-grad, "
-        "junior, associate, mid-level, and unlabelled roles.",
-        structured_schema=JobVerdicts, temperature=0.0)
+        _count()
+        result: JobVerdicts = H.call_llm(
+            "You screen job postings for a candidate.\n\n"
+            f"CANDIDATE INTENT: {intent}\n"
+            f"CANDIDATE EXPERIENCE: about {years_experience} years "
+            "(recent graduate level)\n\n"
+            f"JOBS:\n{listing}\n\n"
+            "For EVERY job above return a verdict with its index.\n"
+            "  matches_intent — does the actual role fit the intent? Reject "
+            "postings that merely mention the keywords (a Sales role at an AI "
+            "company), and reject non-engineering roles.\n"
+            "  seniority_ok  — plausible for this experience level? Reject "
+            "Staff, Senior Staff, Principal, Lead, Manager, Head, Director, "
+            "Architect, and anything demanding 5+ years. Accept new-grad, "
+            "junior, associate, mid-level, 'Senior' only when the posting asks "
+            "for 3 years or fewer, and unlabelled roles.",
+            structured_schema=JobVerdicts, temperature=0.0)
 
-    kept = []
-    for v in result.verdicts:
-        if not (0 <= v.index < len(batch)):
-            continue
-        if v.matches_intent and v.seniority_ok:
-            job = dict(batch[v.index])
-            job["verdict"] = v.reason
-            kept.append(job)
+        for v in result.verdicts:
+            if not (0 <= v.index < len(chunk)):
+                continue
+            if v.matches_intent and v.seniority_ok:
+                job = dict(chunk[v.index])
+                job["verdict"] = v.reason
+                kept.append(job)
+
+        done = min(start + JUDGE_CHUNK, len(jobs))
+        print(f"  [judge] {done}/{len(jobs)} screened, {len(kept)} kept")
+        if len(kept) >= ENOUGH_MATCHES:
+            print(f"  [judge] {ENOUGH_MATCHES} good matches found — stopping early")
+            break
+
     return kept
 
 
@@ -235,7 +255,41 @@ def profile_summary(resume: dict | None = None) -> str:
     def one(v):
         return v[0] if isinstance(v, list) else v
 
+    from datetime import date
+    today = date.today()
+
+    # The model has no clock, and it is bad at date arithmetic even when given
+    # one: told "today is August 2026" and "degree ends May 2026" it still
+    # answered "degree in progress". So work it out here and hand over the
+    # conclusion, not the inputs.
+    def _finished(dates: str) -> bool | None:
+        end = (dates or "").split("\u2013")[-1].split("-")[-1].strip()
+        if not end or "present" in end.lower():
+            return False
+        parsed = H._parse_month_year(end)
+        if not parsed:
+            return None
+        year, month = parsed
+        return (year, month) <= (today.year, today.month)
+
+    edu_lines = []
+    for e in prof.get("education", []):
+        done = _finished(e.get("dates", ""))
+        state = ("COMPLETED" if done else
+                 "IN PROGRESS" if done is False else "dates unclear")
+        edu_lines.append(f"    {e['degree']}, {e['school']} "
+                         f"({e.get('dates', '')}) — {state}")
+    studying = any("IN PROGRESS" in l for l in edu_lines)
+
     lines = [
+        f"== TODAY IS {today:%B %d, %Y} ==",
+        "Use this for anything about timing - availability, start dates, how "
+        "much experience has accrued.",
+        "Education status (already worked out for you - do not recompute):",
+        *edu_lines,
+        f"    => Currently a student: {'Yes' if studying else 'No'}. "
+        f"All degrees finished: {'No' if studying else 'Yes'}.",
+        "",
         "== FACTS (from the candidate's profile - authoritative) ==",
         f"Name: {ident['full_name']}. Location: {ident['location']}.",
         f"Email: {ident['email']}. Phone: {ident['phone']}.",
@@ -282,11 +336,74 @@ def profile_summary(resume: dict | None = None) -> str:
         for proj in pool:
             lines.append(f"    - {proj['name']}: {' '.join(proj['bullets'])[:200]}")
 
+    circ = {k: v for k, v in prof.get("personal_circumstances", {}).items()
+            if not k.startswith("_")}
+    if circ:
+        lines.append("")
+        lines.append("== CIRCUMSTANCES (things no resume can show - use these "
+                     "verbatim, never guess) ==")
+        for k, v in circ.items():
+            lines.append(f"    {k.replace('_', ' ')}: {v}")
+
     lines.append("")
     lines.append("Answer only from the above. If something is not evidenced here, "
                  "say so or decline - never invent a technology, employer, metric "
                  "or credential.")
-    return "\n".join(lines)
+    return "\n".join(l for l in lines if l is not None)
+
+
+# ================================================= 6. CIRCUMSTANCE RULES == #
+# Questions with a definite stored answer are resolved HERE, from the profile,
+# and never reach the model. Prompting was tried twice and failed twice: told
+# "referred by an employee: No" the model still answered Yes, and it repeatedly
+# claimed a prior interview it had no basis for. A fact with a recorded answer
+# is a lookup, not a judgement call.
+CIRCUMSTANCE_RULES: list[tuple[str, str]] = [
+    (r"interview.*(this company|with us|here|at \w+)\b.*(before|previously|past|prior)",
+     "interviewed_at_this_company_recently"),
+    (r"(ever|previously|before).*interview", "interviewed_at_this_company_recently"),
+    (r"interview.*(last|past|previous)\s+\d+\s*(month|week)", "interviewed_anywhere_last_3_months"),
+    (r"interview.*(recently|elsewhere|another|other)", "interviewed_anywhere_last_3_months"),
+    (r"\binterview", "interviewed_anywhere_last_3_months"),      # catch-all
+    (r"(previously|ever|before).*appl(y|ied)", "previously_applied_to_this_company"),
+    (r"appl(y|ied).*(before|previously|in the past)", "previously_applied_to_this_company"),
+    (r"referr", "referred_by_an_employee"),
+    (r"currently employed|are you employed", "currently_employed"),
+    (r"notice period", "notice_period"),
+    (r"other offers|competing offers|offers pending", "other_offers_pending"),
+    (r"criminal|convicted|felony", "criminal_record"),
+    (r"willing to travel|able to travel|can you travel", "can_travel"),
+    (r"deadline|timeline consideration", "deadlines_or_timeline_constraints"),
+]
+
+
+def _circumstance_answer(label: str) -> str | None:
+    """The stored answer for this question, or None if we have no rule."""
+    circ = H.load_profile().get("personal_circumstances", {})
+    low = label.lower()
+    for pattern, key in CIRCUMSTANCE_RULES:
+        if key in circ and re.search(pattern, low):
+            return circ[key]
+    return None
+
+
+def _pick_option(options: list[str], answer: str) -> int | None:
+    """Match a stored answer onto this form's options, without the model.
+    Yes/No is the common case; otherwise fall back to a containment match."""
+    want = answer.strip().lower()
+    lowered = [o.strip().lower() for o in options]
+    for i, o in enumerate(lowered):                      # exact
+        if o == want:
+            return i
+    head = want.split(",")[0].split()[0] if want else ""
+    if head in ("yes", "no"):                            # leading token only
+        for i, o in enumerate(lowered):
+            if o.split()[:1] == [head]:
+                return i
+    for i, o in enumerate(lowered):                      # containment
+        if want in o or o in want:
+            return i
+    return None
 
 
 # =========================================================== 6. WHOLE FORM == #
@@ -321,6 +438,30 @@ def answer_form(questions: list[dict], profile: str, job_context: str) -> dict[i
     if not questions:
         return {}
 
+    # Resolve anything with a stored answer FIRST, deterministically, and drop
+    # it from the batch. The model is never asked about a fact we already know.
+    out: dict[int, dict] = {}
+    remaining = []
+    for q in questions:
+        stored = _circumstance_answer(q["label"])
+        if stored is None:
+            remaining.append(q)
+            continue
+        if q["kind"] == "dropdown":
+            idx = _pick_option(q["options"], stored)
+            if idx is None:
+                remaining.append(q)          # our answer doesn't fit the options
+                continue
+            out[q["idx"]] = {"option": idx, "text": None, "why": "from profile"}
+            print(f"  [rule]  {q['label'][:46]:<48} -> {q['options'][idx][:34]}")
+        else:
+            out[q["idx"]] = {"option": None, "text": stored, "why": "from profile"}
+            print(f"  [rule]  {q['label'][:46]:<48} -> {stored[:34]}")
+
+    questions = remaining
+    if not questions:
+        return out
+
     lines = []
     for n, q in enumerate(questions):
         if q["kind"] == "dropdown":
@@ -346,6 +487,11 @@ def answer_form(questions: list[dict], profile: str, job_context: str) -> dict[i
         "ONLY if answering needs a fact the record does not contain, such as a "
         "past salary figure or a reference's contact details.\n\n"
         "Rules:\n"
+        "- The CIRCUMSTANCES block answers questions about interviews, "
+        "referrals, prior applications, notice period, deadlines and offers. "
+        "If a line there answers the question, use EXACTLY that answer. Do not "
+        "invert it, soften it, or reason around it: 'referred by an employee: "
+        "No' means the answer is No.\n"
         "- Facts come from the record. Never invent an employer, technology, "
         "metric, credential, or personal circumstance.\n"
         "- Skills questions are answerable from the skills and projects listed - "
@@ -356,7 +502,6 @@ def answer_form(questions: list[dict], profile: str, job_context: str) -> dict[i
         "given.",
         structured_schema=FormAnswers, temperature=0.2)
 
-    out: dict[int, dict] = {}
     for a in result.answers:
         if not (0 <= a.q < len(questions)):
             continue

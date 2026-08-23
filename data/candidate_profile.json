@@ -65,5 +65,18 @@
     "lgbtq_status": "No",
     "relationships_disclosure": "No",
     "government_official": "No"
+  },
+  "personal_circumstances": {
+    "_note": "Facts only you know, that no resume can evidence. Without these the model guesses - it answered 'Yes' to 'have you interviewed here recently?' with no basis at all. Keep these current.",
+    "interviewed_at_this_company_recently": "No",
+    "interviewed_anywhere_last_3_months": "No",
+    "previously_applied_to_this_company": "No",
+    "referred_by_an_employee": "No",
+    "currently_employed": "Yes - part-time Data Analyst at the University of North Texas",
+    "notice_period": "None - available immediately",
+    "deadlines_or_timeline_constraints": "No hard deadlines. On F-1 OPT, so start date is flexible subject to standard work-authorization paperwork.",
+    "other_offers_pending": "No",
+    "criminal_record": "No",
+    "can_travel": "Yes"
   }
 }

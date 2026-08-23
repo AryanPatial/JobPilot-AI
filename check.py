@@ -143,6 +143,30 @@ def _checkpoint():
     return ok
 
 
+@check("circumstances", note="facts answered from the profile, never by the model")
+def _circumstances():
+    """Questions with a stored answer must be resolved by rule, not guessed."""
+    import llm_tasks as T
+    cases = [("Have you ever interviewed at Anthropic before?*", "No"),
+             ("Have you interviewed for this role or another role in the past 6 months?", "No"),
+             ("Were you referred by an employee?", "No"),
+             ("Have you previously applied to this company?", "No"),
+             ("Do you have any other offers pending?", "No"),
+             ("Are you currently employed?", "Yes")]
+    bad = 0
+    for q, want in cases:
+        got = T._circumstance_answer(q)
+        ok = got is not None and got.strip().lower().startswith(want.lower())
+        bad += not ok
+        print(f"  {'ok  ' if ok else 'FAIL'} {q[:56]:<58} -> {str(got)[:30]}")
+    for q in ["Why Anthropic?*", "Do you have expertise coding in Python?*"]:
+        got = T._circumstance_answer(q)
+        ok = got is None
+        bad += not ok
+        print(f"  {'ok  ' if ok else 'FAIL'} {q[:56]:<58} -> left to the model")
+    return bad == 0
+
+
 # ------------------------------------------------------------- COSTS $ ---- #
 @check("expand", "$", "LLM turns an intent into real job titles")
 def _expand():

@@ -500,6 +500,33 @@ _HEADERS = ["Company", "Job Title", "Date", "Time", "Resume Used",
             "Job URL", "Status"]
 
 
+def already_applied() -> set[str]:
+    """Job URLs already in the tracker, so a new run doesn't offer them again.
+
+    Keyed on the URL rather than the title, because the same title appears at
+    several companies and one company reposts the same role. Rows logged as
+    "Prepared" (filled but never confirmed submitted) are NOT counted - that
+    job is still fair game.
+    """
+    if not TRACKER_PATH.exists():
+        return set()
+    try:
+        from openpyxl import load_workbook
+        ws = load_workbook(TRACKER_PATH, read_only=True)["Applications"]
+        rows = ws.iter_rows(values_only=True)
+        header = next(rows, None)
+        if not header:
+            return set()
+        url_at = header.index("Job URL")
+        status_at = header.index("Status")
+        return {str(r[url_at]).split("?")[0]
+                for r in rows
+                if r and r[url_at] and str(r[status_at]).strip().lower() == "applied"}
+    except Exception as exc:
+        print(f"  [tracker] could not read past applications: {str(exc)[:60]}")
+        return set()
+
+
 def log_application(*, company, job_title, resume_used, match_score, job_url,
                     coverage=None, attempts=None, status="Prepared"):
     """One row per application.
