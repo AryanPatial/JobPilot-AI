@@ -287,10 +287,12 @@ def track_application(state: State):
     job = state["current_job"]
     scores = {s["resume_id"]: s["score"] for s in state["resume_scores"]}
     from pathlib import Path
+    cov = state.get("coverage") or {}
     path = H.log_application(
         company=job["company"], job_title=job["title"],
         resume_used=Path(state["resume_pdf_path"]).name,
         match_score=scores.get(state["selected_resume_id"]),
+        coverage=cov.get("score"), attempts=state.get("attempts"),
         job_url=job["url"], status="Prepared",
     )
     return {"status": f"logged to tracker: {path}"}

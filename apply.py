@@ -22,7 +22,6 @@ real <select>) are reported, not guessed at.
 """
 from __future__ import annotations
 import re
-import time
 
 
 # --------------------------------------------------------------------------- #
@@ -76,63 +75,20 @@ IGNORE_LABEL = re.compile(r"search|newsletter|subscribe|password|confirm email",
 # prose for a legal attestation. Consent checkboxes are separately never ticked
 # (the fill loop skips every checkbox and radio unconditionally).
 NEVER_ANSWER = re.compile(
+    # Free-text follow-ups to compliance questions
     r"if you answered|please provide additional information|"
     r"please (explain|describe|elaborate)|"
-    r"do you certify|i certify|i attest",
+    # Anything the candidate would be legally BOUND by. GPT agreed to a binding
+    # arbitration clause on a live Anthropic form before this was added; a
+    # signature or a waiver of rights is never the model's to give.
+    r"arbitrat|agree to the terms|terms and conditions|"
+    r"i (agree|consent|acknowledge|understand and agree)|"
+    r"waiv(e|er)|binding|legally bound|"
+    r"electronic signature|e-signature|\bsign\b|initials?\b|"
+    r"do you certify|i certify|i attest|under penalty of perjury|"
+    r"background check|drug (test|screen)|authorize .* to (verify|contact)",
     re.I,
 )
-
-# "Prefer not to say" shows up under many different wordings.
-DECLINE_WORDS = ["decline", "prefer not", "do not wish", "dont wish", "not to disclose",
-                 "prefer to not", "choose not", "wish to answer", "rather not"]
-
-_CONTRACTIONS = [("don't", "do not"), ("doesn't", "does not"), ("didn't", "did not"),
-                 ("isn't", "is not"), ("aren't", "are not"), ("wasn't", "was not"),
-                 ("haven't", "have not"), ("hasn't", "has not"), ("won't", "will not"),
-                 ("i'm", "i am"), ("i've", "i have")]
-
-_NEGATIVE = re.compile(r"\bnot\b|\bnever\b|\bno\b|\bnon-|\bnone\b")
-
-
-def _norm(text: str) -> str:
-    """Lowercase, expand contractions, drop punctuation. So 'No, I don't have a
-    disability' and 'No, I do not have a disability' compare equal."""
-    t = str(text).lower().strip()
-    for a, b in _CONTRACTIONS:
-        t = t.replace(a, b)
-    t = re.sub(r"[^a-z0-9 ]+", " ", t)
-    return re.sub(r"\s+", " ", t).strip()
-
-
-_STATE_BY_ABBR = {
-    "al": "alabama", "ak": "alaska", "az": "arizona", "ar": "arkansas",
-    "ca": "california", "co": "colorado", "ct": "connecticut", "de": "delaware",
-    "fl": "florida", "ga": "georgia", "hi": "hawaii", "id": "idaho",
-    "il": "illinois", "in": "indiana", "ia": "iowa", "ks": "kansas",
-    "ky": "kentucky", "la": "louisiana", "me": "maine", "md": "maryland",
-    "ma": "massachusetts", "mi": "michigan", "mn": "minnesota", "ms": "mississippi",
-    "mo": "missouri", "mt": "montana", "ne": "nebraska", "nv": "nevada",
-    "nh": "new hampshire", "nj": "new jersey", "nm": "new mexico", "ny": "new york",
-    "nc": "north carolina", "nd": "north dakota", "oh": "ohio", "ok": "oklahoma",
-    "or": "oregon", "pa": "pennsylvania", "ri": "rhode island",
-    "sc": "south carolina", "sd": "south dakota", "tn": "tennessee", "tx": "texas",
-    "ut": "utah", "vt": "vermont", "va": "virginia", "wa": "washington",
-    "wv": "west virginia", "wi": "wisconsin", "wy": "wyoming",
-    "dc": "district of columbia",
-}
-
-
-def _expand_state(normalised: str) -> str:
-    """'dallas tx' -> 'dallas texas', so a city value matches a form option
-    that spells the state out in full."""
-    parts = normalised.split()
-    if parts and parts[-1] in _STATE_BY_ABBR:
-        return " ".join(parts[:-1] + [_STATE_BY_ABBR[parts[-1]]])
-    return normalised
-
-
-def _is_negative(text: str) -> bool:
-    return bool(_NEGATIVE.search(_norm(text)))
 
 
 # --------------------------------------------------------------------------- #
@@ -192,96 +148,12 @@ def _match_key(label: str) -> str | None:
     return None
 
 
-def _choose_option(options: list[str], desired) -> str | None:
-    """Accepts a string, or a list meaning 'try these in order, first match
-    wins' (e.g. ["South Asian", "Asian"] for forms that only offer the broader
-    category)."""
-    if isinstance(desired, (list, tuple)):
-        for candidate in desired:
-            hit = _choose_one_option(options, candidate)
-            if hit is not None:
-                return hit
-        return None
-    return _choose_one_option(options, desired)
-
-
-def _choose_one_option(options: list[str], desired: str) -> str | None:
-    """Pick the option that genuinely expresses `desired`. Returns None rather
-    than guessing.
-
-    This runs on legally-attested questions (work authorization, veteran status,
-    disability). Picking the *opposite* option would put a false statement on a
-    real application, so anything ambiguous is left for the human to answer.
-    """
-    if not desired:
-        return None
-    want = _norm(desired)
-    real = [o for o in options
-            if o.strip() and not re.match(r"^(select|choose|--)", o.strip(), re.I)]
-    if not want or not real:
-        return None
-
-    # 1. Exact match after normalising contractions/punctuation.
-    for o in real:
-        if _norm(o) == want:
-            return o
-
-    # 2. "Never" answers. "I have never worked at Robinhood" must still match
-    #    when another company words it "I have never worked at Stripe". Only
-    #    fires when exactly one option is a "never", so it can't pick between
-    #    two of them.
-    if "never" in want:
-        nevers = [o for o in real if "never" in _norm(o)]
-        if len(nevers) == 1:
-            return nevers[0]
-
-    # 3. "Prefer not to say" family -> the form's own decline option.
-    if any(w in want for w in DECLINE_WORDS):
-        for o in real:
-            if any(w in _norm(o) for w in DECLINE_WORDS):
-                return o
-        return None
-
-    # 4. Plain yes/no questions: match the leading token only.
-    if want in ("yes", "no"):
-        for o in real:
-            if _norm(o).split()[:1] == [want]:
-                return o
-        return None
-
-    # 5. Location-style values: "Dallas, TX" should find "Dallas, Texas,
-    #    United States". Expand the state abbreviation and prefer a prefix hit
-    #    so we take "Dallas, Texas" over "Lake Dallas, Texas".
-    for variant in (want, _expand_state(want)):
-        if not variant:
-            continue
-        pref = [o for o in real if _norm(o).startswith(variant)]
-        if pref:
-            return pref[0]
-
-    # 6. Substring match — but only where the polarity agrees, so
-    #    "I am not a protected veteran" can never select "I identify as a
-    #    protected veteran". If more than one option survives, it's ambiguous.
-    want_neg = _is_negative(desired)
-    cands = [o for o in real
-             if (want in _norm(o) or _norm(o) in want) and _is_negative(o) == want_neg]
-    return cands[0] if len(cands) == 1 else None
-
-
 # --------------------------------------------------------------------------- #
 # Filling
 # --------------------------------------------------------------------------- #
 def _fill_text(page, idx: int, value) -> bool:
     try:
         page.fill(f"[data-jaa='{idx}']", str(value))
-        return True
-    except Exception:
-        return False
-
-
-def _select_option(page, idx: int, option_text: str) -> bool:
-    try:
-        page.select_option(f"[data-jaa='{idx}']", label=option_text)
         return True
     except Exception:
         return False
@@ -324,18 +196,6 @@ def _combobox_options(page, idx: int):
         return None, []
 
 
-# Attested / legal / EEO answers. These come from candidate_profile.json and
-# are resolved by the deterministic rules ONLY - the LLM chooser is never
-# consulted for them, no matter how confused the rules get. A blank here is a
-# safe outcome; a model-invented legal declaration is not.
-LLM_FORBIDDEN = {
-    "work_authorization", "requires_sponsorship", "visa_status",
-    "veteran_status", "military_status", "disability_status",
-    "gender", "race_ethnicity", "lgbtq_status",
-    "relationships_disclosure", "government_official",
-}
-
-
 from pathlib import Path
 
 # Where the per-run fill report is written, so the terminal scrolling away
@@ -344,59 +204,15 @@ from pathlib import Path
 _REPORT_PATH = Path(__file__).resolve().parent / "output" / "last_fill_report.txt"
 
 
-# Fields where taking the first offered option is acceptable when nothing
-# matches confidently. Deliberately excludes every attested question.
-FIRST_OPTION_OK = {"preferred_office_location"}
+# How many times to re-scan the page. Conditional questions appear only after
+# an earlier answer is given, so one scan can never see the whole form.
+MAX_SWEEPS = 3
 
 
-def _fill_combobox(page, idx: int, desired, *, allow_first: bool = False,
-                   chooser=None, label: str = "", llm_first: bool = False):
-    """Drive a react-select combobox. Returns (filled?, who_decided)."""
-    el, options = _combobox_options(page, idx)
-
-    if not options:
-        # Async autocomplete (the city field geocodes server-side): no options
-        # until you type. Type, then RE-READ - clicking again would close the
-        # menu we just opened.
-        try:
-            query = str(desired).split(",")[0].strip() or str(desired)
-            el.type(query, delay=120)
-            late = []
-            for _ in range(4):
-                page.wait_for_timeout(1000)
-                late = _read_options(page, el)
-                if late:
-                    break
-            if late:
-                choice, how = _decide(late, desired, label, chooser, llm_first)
-                if choice is None and allow_first:
-                    choice, how = late[0], "first-option"
-                if choice is not None:
-                    page.click(f"[data-jaaopt='{late.index(choice)}']")
-                    page.wait_for_timeout(400)
-                    return True, how
-            page.keyboard.press("Escape")
-            return False, "—"
-        except Exception:
-            return False, "—"
-
-    choice, how = _decide(options, desired, label, chooser, llm_first)
-    if choice is None and allow_first:
-        real = [o for o in options
-                if o.strip() and not re.match(r"^(select|choose|--)", o.strip(), re.I)]
-        choice, how = (real[0], "first-option") if real else (None, "—")
-    if choice is None:
-        try:
-            page.keyboard.press("Escape")      # leave it untouched for the human
-        except Exception:
-            pass
-        return False, "—"
-    try:
-        page.click(f"[data-jaaopt='{options.index(choice)}']")
-        page.wait_for_timeout(350)
-        return True, how
-    except Exception:
-        return False, "—"
+# Typed straight from candidate_profile.json — no model needed to enter a
+# phone number. Everything else on the page goes to the whole-form call.
+DIRECT_FIELDS = {"first_name", "last_name", "email", "phone",
+                 "linkedin", "github", "years_experience"}
 
 
 def _upload_resume(page, resume_path) -> bool:
@@ -409,46 +225,9 @@ def _upload_resume(page, resume_path) -> bool:
     return False
 
 
-def _decide(options: list[str], desired, label: str, chooser, llm_first: bool):
-    """Return (chosen_option_text | None, who_decided).
-
-    With llm_first the model is asked before the rules, and is handed the
-    profile value so it is matching a known fact to this form's wording rather
-    than inventing one. The rules remain the fallback, and the rules alone can
-    still decline - a blank beats a wrong answer on an application.
-    """
-    want = desired[0] if isinstance(desired, (list, tuple)) else desired
-
-    if llm_first and chooser:
-        try:
-            idx = chooser(label, options, want)
-            if idx is not None and 0 <= idx < len(options):
-                return options[idx], "gpt"
-        except Exception:
-            pass
-
-    option = _choose_option(options, desired)
-    if option is not None:
-        return option, "rule"
-
-    if not llm_first and chooser:                # fallback mode
-        try:
-            idx = chooser(label, options, want)
-            if idx is not None and 0 <= idx < len(options):
-                return options[idx], "gpt"
-        except Exception:
-            pass
-    return None, "—"
-
-
-def _chooser_for(key: str, chooser):
-    """The LLM chooser, unless this field is a legal attestation."""
-    return None if (chooser is None or key in LLM_FORBIDDEN) else chooser
-
-
 def fill_greenhouse_form(url: str, fields: dict, open_questions: list,
                          chooser=None, answerer=None, slow_mo: int = 0,
-                         llm_first: bool = False) -> dict:
+                         llm_first: bool = False, form_answerer=None) -> dict:
     """Open the form, fill what we can, upload the resume, and leave the browser
     OPEN for you to review + submit. Returns a report of filled/skipped fields.
 
@@ -459,10 +238,12 @@ def fill_greenhouse_form(url: str, fields: dict, open_questions: list,
               have no value for. Never called for a NEVER_ANSWER label.
     slow_mo:  milliseconds to pause between browser actions, so you can watch
               each field being filled instead of the form snapping to done.
-    llm_first: ask the chooser for EVERY dropdown, using the deterministic
-              rules only when it declines. The chooser is handed the profile
-              value as ground truth, so the model is matching a known fact to
-              this form's wording rather than deciding the fact.
+    form_answerer: callback (questions) -> {idx: {option|text}}. Given every
+              remaining question on the page WITH its real options, in one
+              call, it returns what to put in each. This is the main path:
+              the model sees the whole form at once, and the page is then
+              filled in a single top-to-bottom pass.
+    llm_first / chooser / answerer: retained for the older per-field path.
 
     Both are passed in rather than imported, which keeps this module free of any
     LLM dependency - it still imports nothing from the rest of the project.
@@ -484,7 +265,7 @@ def fill_greenhouse_form(url: str, fields: dict, open_questions: list,
 
     try:
         return _fill(page, fields, open_questions, chooser, answerer,
-                     url, browser, pw, llm_first)
+                     url, browser, pw, llm_first, form_answerer)
     except Exception as exc:
         # Whatever went wrong, the browser MUST stay open and the caller MUST
         # get a handle back - otherwise run.py dies here and the window closes
@@ -498,184 +279,173 @@ def fill_greenhouse_form(url: str, fields: dict, open_questions: list,
                 "crashed": f"{type(exc).__name__}: {exc}"}
 
 
+def collect_questions(page) -> list[dict]:
+    """Everything on the page a human would have to answer.
+
+    Walks the DOM in order and returns one entry per still-empty control,
+    including a dropdown's REAL options (read by opening it). Legally binding
+    items are dropped here so they are never shown to the model at all.
+    """
+    out = []
+    for ctrl in _scan_controls(page):
+        label = (ctrl["label"] or "").strip()
+        if (ctrl["hidden"] or not label or len(label) < 6
+                or ctrl["type"] in ("hidden", "submit", "button", "file")
+                or IGNORE_LABEL.search(label)):
+            continue
+        if ctrl["type"] in ("checkbox", "radio"):
+            continue                       # never auto-ticked, so never asked
+        if NEVER_ANSWER.search(label):
+            continue                       # arbitration, signatures, consent
+
+        if ctrl.get("combo"):
+            if _combobox_value(page, ctrl["idx"]):
+                continue                   # already answered
+            _, options = _combobox_options(page, ctrl["idx"])
+            try:
+                page.keyboard.press("Escape")
+            except Exception:
+                pass
+            if not options:
+                continue
+            out.append({"idx": ctrl["idx"], "label": label,
+                        "kind": "dropdown", "options": options})
+        elif ctrl["tag"] == "select":
+            out.append({"idx": ctrl["idx"], "label": label,
+                        "kind": "dropdown", "options": ctrl["options"]})
+        else:
+            try:
+                el = page.query_selector(f"[data-jaa='{ctrl['idx']}']")
+                if el is None or (el.input_value() or "").strip():
+                    continue
+            except Exception:
+                continue
+            out.append({"idx": ctrl["idx"], "label": label,
+                        "kind": "text", "options": []})
+    return out
+
+
+def _combobox_value(page, idx: int) -> str:
+    """What a react-select box currently shows, if anything."""
+    try:
+        return page.evaluate(
+            """(i)=>{const e=document.querySelector(`[data-jaa="${i}"]`);
+               const c=e&&e.closest('[class*=select__control]');
+               const v=c&&c.querySelector('[class*=single-value]');
+               return v?v.innerText.trim():''}""", idx) or ""
+    except Exception:
+        return ""
+
+
 def _fill(page, fields, open_questions, chooser, answerer, url, browser, pw,
-          llm_first=False) -> dict:
-    """The actual filling. Split out so fill_greenhouse_form can guarantee it
-    always returns a live browser handle even when this raises."""
+          llm_first=False, form_answerer=None) -> dict:
+    """Fill the form in ONE ordered pass.
+
+    1. Known facts straight from the profile (name, email, phone, links).
+    2. Everything else: collect every remaining question with its real
+       options, hand the whole lot to the model in a single call, then fill
+       the page top to bottom with what comes back.
+    """
     filled: list[str] = []
     skipped: list[str] = []
-    needs_confirm: list[str] = []
-    seen: set[str] = set()
+    untouched: list[tuple] = []
 
     # 1) Resume upload first — some forms re-render (and clear) after parsing it.
     if fields.get("resume_file"):
         (filled if _upload_resume(page, fields["resume_file"]) else skipped).append("resume_file")
         page.wait_for_timeout(2000)
 
-    # 2) Every labelled control we can confidently map.
+    # 2) Plain identity text boxes. No model needed to type a phone number.
     for ctrl in _scan_controls(page):
-        if ctrl["hidden"] or ctrl["type"] in ("file", "hidden", "submit", "button"):
+        if ctrl["hidden"] or ctrl.get("combo") or ctrl["tag"] != "input":
+            continue
+        if ctrl["type"] in ("file", "hidden", "submit", "button", "checkbox", "radio"):
             continue
         key = _match_key(ctrl["label"])
-        if not key or key in seen:
+        if key not in DIRECT_FIELDS:
             continue
         value = fields.get(key)
         if value in (None, ""):
             continue
+        value = value[0] if isinstance(value, (list, tuple)) else value
+        if _fill_text(page, ctrl["idx"], value):
+            print(f"    OK  {ctrl['label'][:40]:<42}{str(value)[:30]:<32}profile")
+            filled.append(f"{key} ({ctrl['label'][:38]})")
 
-        if ctrl["tag"] == "select":
-            option, how = _decide(ctrl["options"], value, ctrl["label"],
-                                  chooser, llm_first)
-            ok = _select_option(page, ctrl["idx"], option) if option else False
-            how = how if ok else "—"
-        elif ctrl.get("combo"):
-            ok, how = _fill_combobox(page, ctrl["idx"], value,
-                                     allow_first=key in FIRST_OPTION_OK,
-                                     chooser=chooser, label=ctrl["label"],
-                                     llm_first=llm_first)
-        elif ctrl["type"] in ("radio", "checkbox"):
-            ok, how = False, "—"                # never auto-tick consent boxes
-        else:
-            # A list value is an ordered preference for dropdowns; a plain text
-            # box just gets the first choice.
-            ok = _fill_text(page, ctrl["idx"],
-                            value[0] if isinstance(value, (list, tuple)) else value)
-            how = "profile"
+    # 3) Collect -> one call -> fill, repeated until nothing new appears.
+    #    Some questions are conditional: "Please identify your race" only exists
+    #    once "Are you Hispanic/Latino?" has been answered, so a single scan can
+    #    never see them. Capped at MAX_SWEEPS so this can't spin.
+    untouched_by_label: dict[str, str] = {}
+    seen_labels: set[str] = set()
 
-        shown = value[0] if isinstance(value, (list, tuple)) else value
-        source = (how if ok else "—")
-        print(f"    {'OK ' if ok else '   '} {key:<28}{str(shown)[:32]:<34}"
-              f"{source if ok else 'left blank for you'}")
-        (filled if ok else skipped).append(f"{key} ({ctrl['label'][:40]})")
-        if ok:
-            seen.add(key)
+    for sweep in range(MAX_SWEEPS):
+        questions = [q for q in collect_questions(page)
+                     if q["label"] not in seen_labels]
+        if not questions or not form_answerer:
+            break
+        if sweep:
+            print(f"\n  sweep {sweep + 1}: {len(questions)} newly-revealed "
+                  f"question(s)")
+        seen_labels.update(q["label"] for q in questions)
+        answers = form_answerer(questions)
+        _apply_answers(page, questions, answers, filled, untouched_by_label)
 
-    # 3) Free-text questions. The pre-drafted "why this role" goes in first,
-    #    then the answerer writes anything else that is still blank.
-    answered: list[str] = []
-    if open_questions:
-        draft = open_questions[0].get("drafted_answer", "")
-        placed = False
-        for ta in page.query_selector_all("textarea"):
-            try:
-                if not (ta.input_value() or "").strip():
-                    ta.fill(draft)
-                    answered.append("why_this_role")
-                    placed = True
-                    break
-            except Exception:
-                continue
-        if not placed:
-            skipped.append("why_this_role")
+    untouched = list(untouched_by_label.items())
+    return _finish(url, browser, pw, filled, skipped, untouched)
 
-    if answerer:
-        for ctrl in _scan_controls(page):
-            label = ctrl["label"]
-            if (ctrl["hidden"] or ctrl.get("combo")
-                    or ctrl["tag"] not in ("textarea", "input")
-                    or ctrl["type"] in ("file", "hidden", "submit", "button",
-                                        "checkbox", "radio", "tel", "email")
-                    or not label or len(label) < 12
-                    or IGNORE_LABEL.search(label) or NEVER_ANSWER.search(label)
-                    or _match_key(label)):        # rules already own this field
-                continue
-            try:
-                el = page.query_selector(f"[data-jaa='{ctrl['idx']}']")
-                if el is None or (el.input_value() or "").strip():
-                    continue                      # already filled - leave it
-                text = answerer(label)
-                if text:
-                    el.fill(text)
-                    answered.append(f"{label[:42]} (written)")
-            except Exception:
-                continue
 
-    filled.extend(answered)
-
-    # 3b) Everything on the page we did NOT touch, and why. Without this the
-    #     unmatched controls are invisible - they never enter the fill loop at
-    #     all, so a blank box on the form has no explanation in the terminal.
-    untouched = []
-    for ctrl in _scan_controls(page):
-        label = (ctrl["label"] or "").strip()
-        if (ctrl["hidden"] or ctrl["type"] in ("hidden", "submit", "button")
-                or not label or IGNORE_LABEL.search(label)):
+def _apply_answers(page, questions, answers, filled, untouched_by_label):
+    """Write one batch of answers onto the page, in DOM order."""
+    for q in questions:
+        a = answers.get(q["idx"])
+        if not a:
+            untouched_by_label[q["label"][:58]] = "model returned no answer"
             continue
         try:
-            el = page.query_selector(f"[data-jaa='{ctrl['idx']}']")
-            if el is None:
-                continue
-            if ctrl["type"] in ("checkbox", "radio"):
-                if el.is_checked():
-                    continue
-                why = "checkbox - never auto-ticked"
+            if q["kind"] == "dropdown":
+                el, opts = _combobox_options(page, q["idx"])
+                if not opts:
+                    page.select_option(f"[data-jaa='{q['idx']}']",
+                                       label=q["options"][a["option"]])
+                else:
+                    target = q["options"][a["option"]]
+                    hit = opts.index(target) if target in opts else a["option"]
+                    page.click(f"[data-jaaopt='{hit}']")
+                page.wait_for_timeout(250)
+                chosen = q["options"][a["option"]]
             else:
-                cur = (el.input_value() or "").strip()
-                if not cur and ctrl.get("combo"):
-                    ctl = page.evaluate(
-                        """(i)=>{const e=document.querySelector(`[data-jaa="${i}"]`);
-                           const c=e&&e.closest('[class*=select__control]');
-                           const v=c&&c.querySelector('[class*=single-value]');
-                           return v?v.innerText.trim():''}""", ctrl["idx"])
-                    cur = ctl or ""
-                if cur:
-                    continue
-                key = _match_key(label)
-                why = ("legal question - answered from your profile only"
-                       if key in LLM_FORBIDDEN else
-                       "no rule and no confident match" if key else
-                       "not recognised - no rule for this question")
-                if NEVER_ANSWER.search(label):
-                    why = "compliance follow-up - deliberately left for you"
-            untouched.append((label[:58], why))
-        except Exception:
-            continue
+                page.fill(f"[data-jaa='{q['idx']}']", a["text"])
+                chosen = a["text"][:44]
+            print(f"    OK  {q['label'][:40]:<42}{str(chosen)[:30]:<32}gpt")
+            filled.append(f"{q['label'][:40]} -> {str(chosen)[:24]} (gpt)")
+            untouched_by_label.pop(q["label"][:58], None)
+        except Exception as exc:
+            untouched_by_label[q["label"][:58]] = f"could not set it: {type(exc).__name__}"
 
+
+def _finish(url, browser, pw, filled, skipped, untouched):
+    """Report what happened and hand back the still-open browser."""
+    for lab, why in untouched:
+        skipped.append(f"{lab} — {why}")
     if untouched:
-        print(f"\n  LEFT EMPTY ({len(untouched)}) — fill these yourself before submitting:")
-        for label, why in untouched:
-            print(f"    ·  {label:<60} {why}")
-    else:
-        print("\n  LEFT EMPTY (0) — every visible field on the page has a value.")
-
-    # 4) Report. Anything not confidently matched is YOUR job during review.
-    print("\n[apply] Filled:")
-    for f in filled:
-        print(f"          + {f}")
-    if not filled:
-        print("          (nothing — the page may not be a hosted Greenhouse form)")
-    if needs_confirm:
-        print("[apply] Typed for you — pick the dropdown suggestion to lock it in:")
-        for n in needs_confirm:
-            print(f"          ~ {n}")
-    print("[apply] Set these manually during review:")
-    for s in skipped:
-        print(f"          - {s}")
-    if not skipped:
-        print("          (none)")
-    print("[apply] Confirm these values from your profile file:")
-    for k in ["work_authorization", "requires_sponsorship", "visa_status", "willing_to_relocate",
-              "salary_expectation", "earliest_start_date", "years_experience"]:
-        print(f"          {k}: {fields.get(k)}")
+        print(f"\n  LEFT EMPTY ({len(untouched)}):")
+        for lab, why in untouched:
+            print(f"    ·  {lab:<60} {why}")
+    print(f"\n  Filled {len(filled)} fields.")
     print("[apply] The submit button is NOT clicked. That part is yours.")
 
-    # Terminal output scrolls away; keep a copy you can read at your own pace.
     try:
-        report = ["FORM FILL REPORT", url, "",
-                  f"FILLED ({len(filled)}):"] + [f"  + {x}" for x in filled]
-        report += ["", f"LEFT EMPTY ({len(untouched)}):"]
-        report += [f"  - {lab}\n      {why}" for lab, why in untouched]
-        report += ["", "Values taken from your profile:"]
-        report += [f"  {k}: {fields.get(k)}" for k in
-                   ("work_authorization", "requires_sponsorship", "visa_status",
-                    "willing_to_relocate", "salary_expectation",
-                    "earliest_start_date", "years_experience")]
-        path = _REPORT_PATH
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("\n".join(report), encoding="utf-8")
-        print(f"[apply] Full report saved to {path}")
+        rep = ["FORM FILL REPORT", url, "", f"FILLED ({len(filled)}):"]
+        rep += [f"  + {x}" for x in filled]
+        rep += ["", f"LEFT EMPTY ({len(untouched)}):"]
+        rep += [f"  - {lab}\n      {why}" for lab, why in untouched]
+        _REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _REPORT_PATH.write_text("\n".join(rep), encoding="utf-8")
+        print(f"[apply] Full report saved to {_REPORT_PATH}")
     except Exception:
         pass
 
-    return {"filled": filled, "skipped": skipped, "needs_confirm": needs_confirm,
-            "untouched": untouched, "browser": browser, "pw": pw}
+    return {"filled": filled, "skipped": skipped, "untouched": untouched,
+            "browser": browser, "pw": pw}
+

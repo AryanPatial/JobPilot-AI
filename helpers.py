@@ -220,7 +220,6 @@ US_STATE_ABBR = {
     "or", "pa", "ri", "sc", "sd", "tn", "tx", "ut", "vt", "va", "wa", "wv",
     "wi", "wy", "dc",
 }
-US_MARKERS = {"us", "u.s.", "u.s.a.", "usa", "united states", "united states of america"}
 
 # Non-US countries whose names (or 2-letter codes) collide with US state
 # abbreviations: "Bengaluru, IN" is India, not Indiana; "Berlin, DE" is Germany,
@@ -497,10 +496,20 @@ def render_resume_pdf(resume_content: dict, company: str) -> str:
 # 5. TRACKER  (append one row per application to Excel)
 # ========================================================================== #
 _HEADERS = ["Company", "Job Title", "Date", "Time", "Resume Used",
-            "Match Score", "Job URL", "Status"]
+            "Resume Match", "JD Coverage", "Tailoring Passes",
+            "Job URL", "Status"]
 
 
-def log_application(*, company, job_title, resume_used, match_score, job_url, status="Prepared"):
+def log_application(*, company, job_title, resume_used, match_score, job_url,
+                    coverage=None, attempts=None, status="Prepared"):
+    """One row per application.
+
+    Two different scores, because they answer different questions:
+      Resume Match — which of the base variants fitted this JD best (LLM)
+      JD Coverage  — how well the FINAL tailored resume covers the JD's
+                     requirements, 0-100, deterministic. This is the number
+                     the tailoring loop optimises and the skip threshold uses.
+    """
     from openpyxl import Workbook, load_workbook
     if TRACKER_PATH.exists():
         wb = load_workbook(TRACKER_PATH)
@@ -511,6 +520,6 @@ def log_application(*, company, job_title, resume_used, match_score, job_url, st
     ws = wb["Applications"]
     now = datetime.now()
     ws.append([company, job_title, now.strftime("%Y-%m-%d"), now.strftime("%H:%M:%S"),
-               resume_used, match_score, job_url, status])
+               resume_used, match_score, coverage, attempts, job_url, status])
     wb.save(TRACKER_PATH)
     return str(TRACKER_PATH)

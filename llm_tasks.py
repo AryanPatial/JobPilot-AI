@@ -201,12 +201,6 @@ def select_content(jd: str, pool: list[dict], *, n: int = 3,
     return chosen[:n]
 
 
-# ============================================================= 4. CHOOSE ==== #
-class OptionChoice(BaseModel):
-    index: int = Field(description="0-based index of the chosen option, or -1 if none fit")
-    why: str = Field(description="Under 10 words")
-
-
 _CHOICE_CACHE_PATH = H.OUTPUT_DIR / "choices.json"
 _choice_cache: dict | None = None
 
@@ -221,128 +215,155 @@ def _cache() -> dict:
     return _choice_cache
 
 
-def llm_choose(label: str, options: list[str], profile_summary: str,
-               intended: str | None = None) -> int | None:
-    """Ask the model which option to select.
+def profile_summary(resume: dict | None = None) -> str:
+    """Everything the model needs to answer a form question truthfully.
 
-    `intended` is the value from candidate_profile.json for this field, when we
-    have one. Passing it in is what keeps this safe: the model is matching a
-    known fact to the form's wording, not deciding the fact. Given
-    "I am not a protected veteran" it picks "I have never served in the
-    military"; it is never left to guess whether the candidate is a veteran.
+    Two halves, and the split matters:
 
-    Returns an INDEX, so there is no fuzzy string matching on the way back and
-    only a real option can ever be selected. -1 / None means leave it blank.
+      FACTS      - identity, work authorisation, EEO answers. Straight from
+                   candidate_profile.json, never inferred.
+      EVIDENCE   - education, employment history, projects and skills, from the
+                   resume variants and the experience pool.
+
+    The evidence half is what lets "Do you have expertise coding in Python?" be
+    answered from the actual skills list rather than guessed, and stops the
+    model claiming a technology that appears nowhere in the candidate's work.
     """
-    if not options:
-        return None
-    key = json.dumps([label.strip().lower(), options, intended], sort_keys=True)
-    cache = _cache()
-    if key in cache:
-        return cache[key]
-
-    listing = "\n".join(f"{i}. {o}" for i, o in enumerate(options))
-    known = (f"\nTHE CANDIDATE'S ANSWER TO THIS, FROM THEIR PROFILE: {intended!r}\n"
-             "Select the option that expresses exactly this. Do not substitute a "
-             "different meaning, and never pick an option that contradicts it.\n"
-             if intended else "")
-    try:
-        _count()
-        result: OptionChoice = H.call_llm(
-            "Choose the dropdown option that best answers a job-application question "
-            "for this candidate.\n\n"
-            f"CANDIDATE:\n{profile_summary}\n\n"
-            f"QUESTION: {label}\n{known}\nOPTIONS:\n{listing}\n\n"
-            "Reply with the index number only. If no option is truthful for this "
-            "candidate, return -1 — a blank field is always better than a wrong "
-            "answer on a job application.",
-            structured_schema=OptionChoice, temperature=0.0)
-    except Exception as exc:
-        print(f"  [chooser] LLM unavailable, leaving blank: {str(exc)[:70]}")
-        return None
-
-    idx = result.index if 0 <= result.index < len(options) else None
-    cache[key] = idx
-    try:
-        _CHOICE_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _CHOICE_CACHE_PATH.write_text(json.dumps(cache, indent=2), encoding="utf-8")
-    except Exception:
-        pass
-    if idx is not None:
-        print(f"  [chooser] {label[:44]!r} -> {options[idx]!r} ({result.why})")
-    return idx
-
-
-def profile_summary() -> str:
-    """A short, factual description of the candidate for the dropdown chooser.
-    Facts only, straight from the profile - no inference, no prose."""
     prof = H.load_profile()
     ident, ans = prof["identity"], prof["application_answers"]
-    edu = prof["education"][0]
+
     def one(v):
         return v[0] if isinstance(v, list) else v
-    return (
-        f"{ident['full_name']}, based in {ident['location']}. "
-        f"{edu['degree']}, {edu['school']}. "
+
+    lines = [
+        "== FACTS (from the candidate's profile - authoritative) ==",
+        f"Name: {ident['full_name']}. Location: {ident['location']}.",
+        f"Email: {ident['email']}. Phone: {ident['phone']}.",
+        f"LinkedIn: {ident['linkedin']}  GitHub: {ident['github']}",
         f"Work authorized in the US: {ans['work_authorization_us']}. "
         f"Requires visa sponsorship: {ans['requires_sponsorship_now_or_future']}. "
-        f"Visa status: {ans['visa_status']}. "
+        f"Visa status: {ans['visa_status']}.",
         f"Willing to relocate: {ans['willing_to_relocate']}. "
         f"Gender: {one(ans['gender'])}. Race/ethnicity: {one(ans['race_ethnicity'])}. "
-        f"Not a veteran. No disability."
-    )
+        f"Not a veteran. No disability.",
+    ]
+
+    for e in prof.get("education", []):
+        lines.append(f"Education: {e['degree']}, {e['school']} ({e['dates']})"
+                     + (f", {e['detail']}" if e.get("detail") else ""))
+
+    variants = H.load_resume_variants()
+    if resume is None and variants:
+        resume = variants[0]
+
+    lines.append("")
+    lines.append("== EVIDENCE (the candidate's real work - answer FROM this) ==")
+
+    if resume:
+        lines.append(f"Years of professional experience: {H.years_of_experience(resume)}")
+        for job in resume.get("experience", []):
+            lines.append(f"- {job['title']}, {job['company']} ({job['dates']})")
+            for b in job.get("bullets", []):
+                lines.append(f"    * {b}")
+
+    skills: dict[str, str] = {}
+    for v in variants:
+        sk = v.get("skills", {})
+        if isinstance(sk, dict):
+            skills.update(sk)
+    if skills:
+        lines.append("Skills:")
+        for cat, val in skills.items():
+            lines.append(f"    {cat}: {val}")
+
+    pool = H.load_experience_pool()
+    if pool:
+        lines.append("Projects:")
+        for proj in pool:
+            lines.append(f"    - {proj['name']}: {' '.join(proj['bullets'])[:200]}")
+
+    lines.append("")
+    lines.append("Answer only from the above. If something is not evidenced here, "
+                 "say so or decline - never invent a technology, employer, metric "
+                 "or credential.")
+    return "\n".join(lines)
 
 
-# ============================================================= 5. ANSWER ==== #
-class WrittenAnswer(BaseModel):
-    answer: str = Field(description="The answer text. Empty string if it cannot "
-                                    "be answered truthfully from the profile.")
-    confident: bool = Field(description="False if this needs the human")
+# =========================================================== 6. WHOLE FORM == #
+class FormAnswer(BaseModel):
+    """One answer, tied back to the question's number in the prompt."""
+    q: int = Field(description="The question number from the list")
+    option: int = Field(default=-1, description="For a dropdown: 0-based index of "
+                                                "the chosen option. -1 if none fit.")
+    text: str = Field(default="", description="For a text box: what to write. "
+                                              "Empty if it cannot be answered.")
+    why: str = Field(default="", description="Under 10 words")
 
 
-def llm_answer(label: str, profile_summary: str, job_context: str = "",
-               *, max_words: int = 90) -> str | None:
-    """Write a free-text application answer on the candidate's behalf.
+class FormAnswers(BaseModel):
+    answers: List[FormAnswer]
 
-    Used for open questions the rules have no value for - "why this role",
-    "describe a project", "what interests you about us". Never used for legal
-    attestations: apply.NEVER_ANSWER filters those out before we get here, and
-    apply.LLM_FORBIDDEN keeps the attested dropdowns rules-only.
 
-    Grounded strictly in the profile summary and the JD. Returns None rather
-    than guessing when the question needs a fact we don't hold.
+def answer_form(questions: list[dict], profile: str, job_context: str) -> dict[int, dict]:
+    """Answer an ENTIRE application form in one call.
+
+    `questions` is what Playwright actually found on the page:
+        [{"idx": 9, "label": "...", "kind": "dropdown", "options": [...]}, ...]
+
+    One call rather than one per box, for three reasons: the model sees the
+    whole form at once (so it notices the same question asked twice in
+    different words), it costs a fraction as much, and the caller can then
+    fill the page in a single top-to-bottom pass.
+
+    Returns {idx: {"option": int|None, "text": str|None, "why": str}}.
+    Anything legally binding is filtered out by the caller before it gets here.
     """
-    key = json.dumps(["ANSWER", label.strip().lower(), job_context[:60]], sort_keys=True)
-    cache = _cache()
-    if key in cache:
-        return cache[key]
+    if not questions:
+        return {}
 
-    try:
-        _count()
-        result: WrittenAnswer = H.call_llm(
-            "Write a job-application answer for this candidate. Truthful, specific, "
-            "first person, no hype, no invented facts.\n\n"
-            f"CANDIDATE:\n{profile_summary}\n\n"
-            f"ROLE CONTEXT: {job_context[:600]}\n\n"
-            f"QUESTION: {label}\n\n"
-            f"Keep it under {max_words} words. Ground every claim in the candidate "
-            "details above - never invent an employer, a metric, a technology, or a "
-            "personal circumstance. If the question asks for something not present "
-            "in the candidate details (a salary figure, a date, a reference, a "
-            "legal declaration), set confident=false and return an empty answer.",
-            structured_schema=WrittenAnswer, temperature=0.3)
-    except Exception as exc:
-        print(f"  [answer] LLM unavailable: {str(exc)[:70]}")
-        return None
+    lines = []
+    for n, q in enumerate(questions):
+        if q["kind"] == "dropdown":
+            opts = "  ".join(f"[{i}] {o}" for i, o in enumerate(q["options"]))
+            lines.append(f"{n}. ({q['kind']}) {q['label']}\n     OPTIONS: {opts}")
+        else:
+            lines.append(f"{n}. ({q['kind']}) {q['label']}")
 
-    text = (result.answer or "").strip()
-    out = text if (result.confident and text) else None
-    cache[key] = out
-    try:
-        _CHOICE_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _CHOICE_CACHE_PATH.write_text(json.dumps(cache, indent=2), encoding="utf-8")
-    except Exception:
-        pass
-    if out:
-        print(f"  [answer] {label[:44]!r} -> {out[:60]}...")
+    _count()
+    result: FormAnswers = H.call_llm(
+        "Fill in a job application for this candidate.\n\n"
+        f"CANDIDATE RECORD (authoritative - never contradict it):\n{profile}\n\n"
+        f"ROLE: {job_context[:600]}\n\n"
+        f"QUESTIONS:\n" + "\n".join(lines) + "\n\n"
+        "Answer EVERY question, returning its number in `q`.\n"
+        "  dropdown -> set `option` to the index of the best option. Use -1 only "
+        "if no option is truthful for this candidate.\n"
+        "  text     -> set `text` to what should be written, first person, "
+        "specific, under 90 words. Optional or open-ended boxes ('Additional "
+        "Information', 'Personal Preferences', 'anything else we should know') "
+        "still get a real answer drawn from the projects and skills - they are "
+        "a chance to say something useful, not a box to skip. Leave `text` empty "
+        "ONLY if answering needs a fact the record does not contain, such as a "
+        "past salary figure or a reference's contact details.\n\n"
+        "Rules:\n"
+        "- Facts come from the record. Never invent an employer, technology, "
+        "metric, credential, or personal circumstance.\n"
+        "- Skills questions are answerable from the skills and projects listed - "
+        "use them, and name the concrete work.\n"
+        "- If the same thing is asked twice in different words, answer both "
+        "consistently.\n"
+        "- Prefer answering over declining, but never guess a fact you were not "
+        "given.",
+        structured_schema=FormAnswers, temperature=0.2)
+
+    out: dict[int, dict] = {}
+    for a in result.answers:
+        if not (0 <= a.q < len(questions)):
+            continue
+        q = questions[a.q]
+        if q["kind"] == "dropdown":
+            if 0 <= a.option < len(q["options"]):
+                out[q["idx"]] = {"option": a.option, "text": None, "why": a.why}
+        elif (a.text or "").strip():
+            out[q["idx"]] = {"option": None, "text": a.text.strip(), "why": a.why}
     return out
