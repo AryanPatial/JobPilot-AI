@@ -1,14 +1,4 @@
-"""
-draw_graph.py  —  Print the graph exactly as LangGraph sees it.
-
-    ./venv/bin/python draw_graph.py            mermaid (paste into a README)
-    ./venv/bin/python draw_graph.py ascii      terminal diagram
-    ./venv/bin/python draw_graph.py edges      plain list of nodes and edges
-    ./venv/bin/python draw_graph.py png        render to output/graph.png
-
-This is generated from the compiled graph, not hand-drawn, so it can never
-drift out of date with build_graph().
-"""
+"""Print the compiled graph. Modes: mermaid, ascii, edges, png."""
 import sys
 
 import agent

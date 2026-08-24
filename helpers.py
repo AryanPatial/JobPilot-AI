@@ -1,15 +1,4 @@
-"""
-helpers.py  —  All the "tools" the agent uses, in one place.
-
-Sections:
-  1. Config & paths (+ Gemini model factory)
-  2. Job search   (Greenhouse API + strict US-only location filter)
-  3. Small brains (salary from JD, years of experience, start date)
-  4. Resume PDF   (JSON content + HTML template -> PDF)
-  5. Tracker      (append a row to Excel)
-
-If you want to know "where does X happen?", it's one of these five sections.
-"""
+"""helpers.py  -  All the "tools" the agent uses, in one place."""
 from __future__ import annotations
 import html
 import json
@@ -40,8 +29,7 @@ OUTPUT_RESUMES_DIR.mkdir(parents=True, exist_ok=True)
 import os
 
 # --------------------------------------------------------------------------- #
-# LLM access. call_llm() is the ONLY place the rest of the app talks to a model,
-# so swapping providers is a one-line .env change and nothing else moves.
+# LLM access
 # --------------------------------------------------------------------------- #
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai").lower()
 LLM_TIMEOUT_SECONDS = 90
@@ -91,12 +79,7 @@ def _is_quota(exc) -> bool:
 
 def get_llm(temperature: float = 0.3, structured_schema=None,
             model: str | None = None, api_key: str | None = None):
-    """Build a chat model for the active provider.
-
-    timeout matters more than it looks: without it a stalled TCP connection
-    blocks forever inside SSL_read and no exception is ever raised, so retry
-    logic never fires. max_retries=0 because invoke_llm() owns the retry policy.
-    """
+    """Build a chat model for the active provider."""
     if LLM_PROVIDER == "openai":
         from langchain_openai import ChatOpenAI
         llm = ChatOpenAI(model=model or OPENAI_MODEL, temperature=temperature,
@@ -124,9 +107,7 @@ def invoke_llm(llm, prompt, *, attempts: int = 4, base_delay: float = 3.0):
             msg, name = str(exc).lower(), type(exc).__name__.lower()
             if "429" in msg or "resource_exhausted" in msg or "quota" in msg:
                 raise QuotaExhausted(str(exc)) from exc
-            # Match on the exception TYPE too: httpx.ReadTimeout's message is
-            # "The read operation timed out" - no substring "timeout" - so a
-            # text-only check wrongly classified it as permanent.
+            # Match on the exception TYPE too: httpx.ReadTimeout's message is "The read operation time
             transient = ("503" in msg or "unavailable" in msg or "overload" in msg
                          or "500" in msg or "timed out" in msg or "timeout" in msg
                          or "connection" in msg
@@ -141,11 +122,7 @@ def invoke_llm(llm, prompt, *, attempts: int = 4, base_delay: float = 3.0):
 
 
 def call_llm(prompt, *, structured_schema=None, temperature: float = 0.3):
-    """Run a prompt with model AND key failover.
-
-    A 503 means the MODEL is overloaded  -> try the next model.
-    A 429 means the KEY is out of quota  -> try the next key, same model.
-    """
+    """Run a prompt with model AND key failover."""
     last = None
     for model in _models():
         for idx, key in enumerate(_keys()):
@@ -191,12 +168,18 @@ def claimable_vocabulary() -> set[str]:
     if _VOCAB_CACHE is None:
         import scoring
         _VOCAB_CACHE = scoring.build_vocabulary(
-            EXPERIENCE_POOL_PATH, *sorted(RESUMES_DIR.glob("*.json")))
+            EXPERIENCE_POOL_PATH, *resume_variant_paths())
     return _VOCAB_CACHE
 
 
+def resume_variant_paths() -> list[Path]:
+    # skip *.example.json - those are committed templates, not real resumes
+    return [p for p in sorted(RESUMES_DIR.glob("*.json"))
+            if not p.name.endswith(".example.json")]
+
+
 def load_resume_variants() -> list[dict]:
-    return [load_json(p) for p in sorted(RESUMES_DIR.glob("*.json"))]
+    return [load_json(p) for p in resume_variant_paths()]
 
 
 # ========================================================================== #
@@ -221,9 +204,7 @@ US_STATE_ABBR = {
     "wi", "wy", "dc",
 }
 
-# Non-US countries whose names (or 2-letter codes) collide with US state
-# abbreviations: "Bengaluru, IN" is India, not Indiana; "Berlin, DE" is Germany,
-# not Delaware; "Toronto, CA" is Canada, not California. Any hit here = drop.
+# Non-US countries whose names (or 2-letter codes) collide with US state abbreviations: "B
 NON_US_COUNTRIES = {
     "canada", "mexico", "india", "germany", "france", "spain", "portugal",
     "italy", "netherlands", "belgium", "switzerland", "austria", "poland",
@@ -239,10 +220,7 @@ NON_US_COUNTRIES = {
     "serbia", "croatia", "slovakia", "slovenia", "hungary", "lithuania",
     "latvia", "estonia", "luxembourg", "malta", "cyprus", "armenia", "georgia (country)",
 }
-# Major non-US cities. Needed because some ISO country codes ARE US state
-# abbreviations: "Bengaluru, IN" (India/Indiana), "Berlin, DE" (Germany/Delaware),
-# "Toronto, CA" (Canada/California), "Tel Aviv, IL" (Israel/Illinois). The city
-# name disambiguates. Not exhaustive — add any hub your boards actually post.
+# Major non-US cities
 NON_US_CITIES = {
     "toronto", "vancouver", "montreal", "ottawa", "calgary", "waterloo",
     "london", "manchester", "edinburgh", "dublin", "belfast", "cambridge, uk",
@@ -263,9 +241,7 @@ NON_US_CITIES = {
     "mexico city", "guadalajara", "monterrey", "panama city", "chisinau", "kyiv",
 }
 
-# US state abbreviations that are ALSO ISO country codes. Only for these does
-# the city name need to break the tie — "Manchester, NH" and "Paris, TX" stay
-# US because NH and TX are unambiguous.
+# US state abbreviations that are ALSO ISO country codes
 AMBIGUOUS_ABBR = {"al", "ar", "ca", "co", "de", "ga", "id", "il", "in", "ky",
                   "la", "ma", "md", "me", "mn", "mo", "ms", "mt", "nc", "ne",
                   "pa", "sc", "sd", "tn", "va"}
@@ -292,13 +268,7 @@ _LOC_SPLIT = re.compile(r"[;|/\n]| or |, +and +")
 
 
 def _part_is_us(text: str) -> bool:
-    """Is ONE location string a US location?
-
-    Order is the whole trick. Every non-US signal is checked BEFORE any US
-    signal, because a multi-location posting like
-    "New York, NY; Toronto, Ontario, CAN - Remote" contains a perfectly good
-    US marker - and if we look for that first we accept the Canadian half too.
-    """
+    """Is ONE location string a US location?"""
     t = text.lower().strip()
     if not t:
         return False
@@ -318,36 +288,26 @@ def _part_is_us(text: str) -> bool:
     if any(state in t for state in US_STATES):
         return True
 
-    # 3. A state abbreviation as its own token, so "or" (Oregon) doesn't match
-    #    inside "coordinator" and "in" doesn't match inside "engineering".
+    # 3
     hits = tokens & US_STATE_ABBR
     if not hits:
         return False
     if hits - AMBIGUOUS_ABBR:
         return True            # NH, TX, NY - nothing to confuse them with
 
-    # 4. Only an abbreviation that doubles as a country code (CA/IN/DE/IL...).
-    #    The city breaks the tie: "Berlin, DE" is Germany, "Dover, DE" is not.
+    # 4
     return not any(city in t for city in NON_US_CITIES)
 
 
 def us_locations(location: str) -> list[str]:
-    """The US-only parts of a possibly multi-location posting.
-
-    "SF, CA;New York, NY;Toronto, Ontario, CAN" -> ["SF, CA", "New York, NY"]
-    """
+    """The US-only parts of a possibly multi-location posting."""
     if not location:
         return []
     return [p.strip() for p in _LOC_SPLIT.split(location) if _part_is_us(p)]
 
 
 def is_us_location(location: str) -> bool:
-    """STRICT US-only: true when at least one listed location is unambiguously
-    in the US. A posting offering both New York and Toronto is kept (you can
-    take it in New York) but search_jobs_greenhouse rewrites its location to
-    the US parts, so a non-US city is never shown or applied to. A posting with
-    no US option at all, or only an ambiguous one ('Remote', 'n/a'), is dropped.
-    """
+    """STRICT US-only: true when at least one listed location is unambiguously"""
     return bool(us_locations(location))
 
 
@@ -446,7 +406,7 @@ def years_of_experience(resume: dict) -> float:
     total_months = 0
     for job in resume.get("experience", []):
         dates = job.get("dates", "")
-        parts = re.split(r"[–—\-]", dates)
+        parts = re.split(r"[--\-]", dates)
         if len(parts) != 2:
             continue
         start = _parse_month_year(parts[0])
@@ -470,7 +430,9 @@ def _safe(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_")
 
 
-def render_resume_pdf(resume_content: dict, company: str) -> str:
+def render_resume_pdf(resume_content: dict, company: str,
+                      role: str | None = None) -> str:
+    """Render to output/resumes/<Name>_<Company>_<Role>.pdf."""
     from jinja2 import Template
     profile = load_profile()
     ident = profile["identity"]
@@ -486,7 +448,11 @@ def render_resume_pdf(resume_content: dict, company: str) -> str:
     tmpl = Template((TEMPLATES_DIR / "resume.html").read_text(encoding="utf-8"))
     html_str = tmpl.render(**ctx)
 
-    out_path = OUTPUT_RESUMES_DIR / f"Aryan_Patial_{_safe(company)}.pdf"
+    parts = [_safe(ident["full_name"]), _safe(company)]
+    if role:
+        # Titles run long ("Machine Learning Engineer, Ranking & Relevance"), so cap the role segm
+        parts.append(_safe(role)[:60].strip("_"))
+    out_path = OUTPUT_RESUMES_DIR / ("_".join(x for x in parts if x) + ".pdf")
     from weasyprint import HTML   # lazy import; rest of app runs without it
     HTML(string=html_str).write_pdf(str(out_path))
     return str(out_path)
@@ -501,13 +467,7 @@ _HEADERS = ["Company", "Job Title", "Date", "Time", "Resume Used",
 
 
 def already_applied() -> set[str]:
-    """Job URLs already in the tracker, so a new run doesn't offer them again.
-
-    Keyed on the URL rather than the title, because the same title appears at
-    several companies and one company reposts the same role. Rows logged as
-    "Prepared" (filled but never confirmed submitted) are NOT counted - that
-    job is still fair game.
-    """
+    """Job URLs already in the tracker, so a new run doesn't offer them again."""
     if not TRACKER_PATH.exists():
         return set()
     try:
@@ -529,14 +489,7 @@ def already_applied() -> set[str]:
 
 def log_application(*, company, job_title, resume_used, match_score, job_url,
                     coverage=None, attempts=None, status="Prepared"):
-    """One row per application.
-
-    Two different scores, because they answer different questions:
-      Resume Match — which of the base variants fitted this JD best (LLM)
-      JD Coverage  — how well the FINAL tailored resume covers the JD's
-                     requirements, 0-100, deterministic. This is the number
-                     the tailoring loop optimises and the skip threshold uses.
-    """
+    """One row per application."""
     from openpyxl import Workbook, load_workbook
     if TRACKER_PATH.exists():
         wb = load_workbook(TRACKER_PATH)

@@ -1,11 +1,18 @@
 {
   "resume_id": "data_analytics",
   "label": "Data Science / Analytics",
-  "target_roles": ["Data Analyst", "Data Scientist", "Analytics Engineer", "Business Analyst", "BI Analyst", "Business Intelligence"],
+  "target_roles": [
+    "Data Analyst",
+    "Data Scientist",
+    "Analytics Engineer",
+    "Business Analyst",
+    "BI Analyst",
+    "Business Intelligence"
+  ],
   "experience": [
     {
-      "company": "University of North Texas",
-      "location": "Denton, TX, USA",
+      "company": "State University",
+      "location": "Austin, TX, USA",
       "title": "Data Analyst",
       "dates": "August 2025 – Present",
       "bullets": [
@@ -15,8 +22,8 @@
       ]
     },
     {
-      "company": "Datameadows",
-      "location": "Hyderabad, India",
+      "company": "Analytics Partners",
+      "location": "Remote",
       "title": "Data Science Analyst Intern",
       "dates": "November 2023 – March 2024",
       "bullets": [
@@ -27,8 +34,8 @@
       ]
     },
     {
-      "company": "Altair Solutions",
-      "location": "Delhi, India",
+      "company": "DataBridge Consulting",
+      "location": "Remote",
       "title": "Data Science Intern",
       "dates": "June 2022 – August 2022",
       "bullets": [
@@ -38,8 +45,8 @@
       ]
     },
     {
-      "company": "MRS Pvt Ltd",
-      "location": "Delhi, India",
+      "company": "Meridian Services",
+      "location": "Remote",
       "title": "Business Analyst Intern",
       "dates": "March 2021 – May 2021",
       "bullets": [

@@ -1,10 +1,4 @@
-"""
-agent.py  —  The brain: the state, the pipeline steps (nodes), and the graph.
-
-The state is the shared clipboard that flows through every step. Each step reads
-what it needs and writes back a small update. The graph just says what order the
-steps run in. Read build_graph() at the bottom to see the whole flow at a glance.
-"""
+"""LangGraph state machine: state, nodes, routing, graph."""
 from __future__ import annotations
 import json
 import sqlite3
@@ -37,8 +31,16 @@ class State(TypedDict, total=False):
     selected_projects: list          # chosen from the experience pool
     tailored_resume: Optional[dict]
     coverage: Optional[dict]         # deterministic score + named gaps
-    attempts: int                    # tailoring cycles used (hard cap)
+    attempts: int                    # project combinations tried (hard cap)
     resume_pdf_path: Optional[str]
+
+    # The exploration loop keeps the best attempt, not the last one.
+    tried_project_sets: list         # sorted id-tuples already scored, as lists
+    best_resume: Optional[dict]
+    best_coverage: Optional[dict]
+    best_projects: list
+    invented_terms: list             # anti-invention guard, not part of the score
+    jd_requirements: list            # fixed per job, so combinations are comparable
 
     application_fields: Optional[dict]
     open_questions: Optional[list]
@@ -79,27 +81,23 @@ def _resume_summary(v: dict) -> str:
 
 # ------------------------------------------------------------------ NODES --- #
 def search_jobs(state: State):
-    """Intent -> LLM title expansion -> keyword+US prefilter -> ONE batched judge.
-
-    The judge does double duty (spec items 1 and 3): it drops roles that only
-    mention the keywords, and roles whose seniority doesn't fit the candidate.
-    Neither is visible to substring matching.
-    """
+    """Intent -> LLM title expansion -> keyword+US prefilter -> ONE batched judge."""
     intent = state.get("intent") or "data and AI roles"
     titles = T.expand_query(intent)
     print(f"  [search] '{intent}' -> {len(titles)} title variants")
+    print(f"           {', '.join(titles[:8])}"
+          + (f" … +{len(titles) - 8} more" if len(titles) > 8 else ""))
 
     jobs = H.search_jobs_greenhouse(state["board_tokens"], titles)
     print(f"  [search] {len(jobs)} US candidates after keyword prefilter")
 
-    # Don't offer a job that's already in the tracker as Applied. Filtering here
-    # rather than later means we never spend a judge or tailoring call on it.
+    # Don't offer a job that's already in the tracker as Applied
     done = H.already_applied()
     if done:
         before = len(jobs)
         jobs = [j for j in jobs if (j.get("url") or "").split("?")[0] not in done]
         if before != len(jobs):
-            print(f"  [search] {before - len(jobs)} already applied to — skipped")
+            print(f"  [search] {before - len(jobs)} already applied to - skipped")
     if not jobs:
         return {"jobs": [], "titles": titles, "error": "no_jobs",
                 "status": "no US jobs matched"}
@@ -117,7 +115,7 @@ def search_jobs(state: State):
         "job_description": chosen["description"], "attempts": 0,
         "job_index": 0, "skipped_jobs": [],
         "status": f"selected: {chosen['title']} @ {chosen['company']} "
-                  f"({chosen['location']}) — {chosen.get('verdict', '')}",
+                  f"({chosen['location']}) - {chosen.get('verdict', '')}",
     }
 
 
@@ -138,26 +136,21 @@ def match_resumes(state: State):
 
 
 def select_projects(state: State):
-    """Pick which of the candidate's REAL projects belong on this resume.
-
-    Selection, not generation. On a retry the scorer's named gaps are passed in,
-    so the only way to raise the score is to surface a different true project -
-    never to invent a skill.
-    """
+    """Pick which of the candidate's REAL projects belong on this resume."""
     pool = H.load_experience_pool()
-    missing = (state.get("coverage") or {}).get("missing") if state.get("attempts") else None
-    picks = T.select_content(state["job_description"], pool, missing_skills=missing)
-    print(f"  [select] {', '.join(p['name'][:34] for p in picks)}")
+    attempts = state.get("attempts", 0)
+    missing = (state.get("coverage") or {}).get("missing") if attempts else None
+    tried = state.get("tried_project_sets", [])
+    picks = T.select_content(state["job_description"], pool,
+                             missing_skills=missing, avoid=tried)
+    print(f"  [select] combination {attempts + 1}/{S.MAX_ATTEMPTS}: "
+          f"{', '.join(p['name'][:30] for p in picks)}")
     return {"selected_projects": picks,
             "status": f"selected {len(picks)} projects from a pool of {len(pool)}"}
 
 
 def tailor_resume(state: State):
-    """Assemble base variant + selected projects, then reword bullets to the JD.
-
-    The LLM may only reword text that already exists: we swap by exact string
-    match, so there is no code path that appends a bullet.
-    """
+    """Assemble base variant + selected projects, then reword bullets to the JD."""
     rid = state["selected_resume_id"]
     variant = next(v for v in H.load_resume_variants() if v["resume_id"] == rid)
 
@@ -185,19 +178,72 @@ def tailor_resume(state: State):
 
 
 def grade_resume(state: State):
-    """Deterministic coverage score. Never the LLM - a model grading its own
-    tailoring flatters itself and the retry loop exits at a fake 95."""
+    """Score the tailored résumé - evidence from the model, verdict from code."""
+    resume = state["tailored_resume"]
     vocab = H.claimable_vocabulary()
-    cov = S.score_resume(state["tailored_resume"], state["job_description"], vocab)
-    print(f"  [score] {cov['score']}/100 (attempt {state['attempts']}/"
-          f"{S.MAX_ATTEMPTS})" + (f" — missing: {', '.join(cov['missing'][:5])}"
-                                  if cov["missing"] else ""))
-    return {"coverage": cov, "status": f"coverage {cov['score']}/100"}
+
+    # One text, shown to the model and used to verify its citations
+    edu = "; ".join(f"{e['degree']}, {e['school']} ({e.get('dates', '')})"
+                    for e in H.load_profile().get("education", []))
+    graded_text = S.resume_text(resume, lower=False) + " Education: " + edu
+
+    # Extracted once per job and reused for every combination, so the three attempts sit the s
+    requirements = state.get("jd_requirements")
+    if not requirements:
+        requirements = T.extract_requirements(state["job_description"])
+        print(f"  [score] {len(requirements)} requirements extracted from the JD "
+              f"({sum(r['must_have'] for r in requirements)} required)")
+
+    cited = T.cite_evidence(requirements, graded_text)
+    cov = S.verify_and_score(graded_text, cited)
+
+    met = len(cov["covered"])
+    print(f"  [score] {cov['score']}/100 (combination {state['attempts']}/"
+          f"{S.MAX_ATTEMPTS}) - {met}/{len(requirements)} requirements evidenced")
+    for name in cov["missing"][:4]:
+        print(f"            unmet: {name[:64]}")
+    if cov["fabricated"]:
+        print(f"  [score] REJECTED {len(cov['fabricated'])} citation(s) that are not "
+              f"in the résumé: {', '.join(cov['fabricated'][:3])}")
+
+    # invention guard, not part of the score
+    invented = S.introduced_terms(resume, H.EXPERIENCE_POOL_PATH,
+                                  *H.resume_variant_paths())
+    if invented:
+        print(f"  [guard] terms on the résumé with no basis in your files: "
+              f"{', '.join(invented[:6])}")
+
+    # Remember this combination so select_projects cannot serve it up again.
+    tried = list(state.get("tried_project_sets", []))
+    tried.append(sorted(p["id"] for p in state["selected_projects"] if "id" in p))
+
+    # Keep the best attempt, not the most recent one
+    out = {"coverage": cov, "tried_project_sets": tried,
+           "invented_terms": invented, "jd_requirements": requirements,
+           "status": f"coverage {cov['score']}/100"}
+    best = state.get("best_coverage")
+    if best is None or cov["score"] > best["score"]:
+        if best is not None:
+            print(f"  [score] new best - {best['score']} -> {cov['score']}")
+        out.update({"best_coverage": cov,
+                    "best_resume": state["tailored_resume"],
+                    "best_projects": state["selected_projects"]})
+    else:
+        print(f"  [score] keeping the earlier best of {best['score']}/100")
+    return out
 
 
 def render_resume(state: State):
-    path = H.render_resume_pdf(state["tailored_resume"], state["current_job"]["company"])
-    return {"resume_pdf_path": path, "status": f"PDF ready: {path}"}
+    """Render the BEST combination found, and promote it into the state."""
+    job = state["current_job"]
+    best_cov = state.get("best_coverage") or state.get("coverage")
+    resume = state.get("best_resume") or state["tailored_resume"]
+    projects = state.get("best_projects") or state.get("selected_projects", [])
+
+    path = H.render_resume_pdf(resume, job["company"], job["title"])
+    return {"resume_pdf_path": path, "tailored_resume": resume,
+            "coverage": best_cov, "selected_projects": projects,
+            "status": f"PDF ready ({best_cov['score']}/100): {path}"}
 
 
 def prepare_application(state: State):
@@ -232,8 +278,7 @@ def prepare_application(state: State):
         "how_did_you_hear": ans["how_did_you_hear"],
     }
 
-    # Screening questions (non-legal). Facts still come from the file; the only
-    # computed one is the office location, which follows the job we picked.
+    # Screening questions (non-legal)
     screening = {k: v for k, v in profile.get("screening_answers", {}).items()
                  if not k.startswith("_")}
     if screening.get("preferred_office_location") == "AUTO":
@@ -259,21 +304,16 @@ def prepare_application(state: State):
 
 
 def next_job(state: State):
-    """This job scored too low to be worth applying to - move to the next one.
-
-    A poor coverage score after the tailoring loop means the JD genuinely
-    doesn't line up with anything real in the candidate's history. Applying
-    anyway wastes an application; the honest move is to skip it.
-    """
+    """This job scored too low to be worth applying to - move to the next one."""
     jobs = state["jobs"]
     idx = state.get("job_index", 0) + 1
-    cov = state.get("coverage") or {}
+    cov = state.get("best_coverage") or state.get("coverage") or {}
     skipped = list(state.get("skipped_jobs", []))
     skipped.append({"title": state["current_job"]["title"],
                     "company": state["current_job"]["company"],
                     "score": cov.get("score")})
     print(f"  [skip] {state['current_job']['title'][:46]} scored "
-          f"{cov.get('score')}/100 (< {S.MIN_SCORE_TO_APPLY}) — trying the next job")
+          f"{cov.get('score')}/100 (< {S.MIN_SCORE_TO_APPLY}) - trying the next job")
 
     if idx >= len(jobs):
         return {"skipped_jobs": skipped, "error": "no_suitable_jobs",
@@ -285,6 +325,8 @@ def next_job(state: State):
     return {"job_index": idx, "current_job": nxt,
             "job_description": nxt["description"],
             "attempts": 0, "coverage": None, "skipped_jobs": skipped,
+            "tried_project_sets": [], "best_coverage": None,
+            "best_resume": None, "best_projects": [], "jd_requirements": [],
             "status": f"moved to {nxt['title']} @ {nxt['company']}"}
 
 
@@ -315,42 +357,35 @@ def _after_search(state: State) -> str:
 
 
 def _after_grade(state: State) -> str:
-    """Three-way routing after scoring.
+    """Explore, then commit to the best combination found."""
+    attempts = state.get("attempts", 0)
+    best = (state.get("best_coverage") or {}).get("score", 0)
 
-      >= TARGET_SCORE        -> good enough, go apply
-      retry budget left and
-      an unused real project
-      would close the gap    -> retry (loops back to SELECTION, not tailoring,
-                                so the fix is a better true project, never a
-                                reworded claim)
-      exhausted, still
-      < MIN_SCORE_TO_APPLY   -> skip this job entirely and try the next one
-      exhausted, but >= min  -> good enough, go apply
-    """
-    cov = state.get("coverage") or {}
-    score = cov.get("score", 0)
-
-    if score >= S.TARGET_SCORE:
+    # A perfect score is the only early exit. Not "good enough" - unbeatable.
+    if best >= S.PERFECT_SCORE:
+        print(f"  [score] {best}/100 - no combination can beat it, stopping here "
+              f"after {attempts} of {S.MAX_ATTEMPTS}")
         return "good_enough"
 
-    if state.get("attempts", 0) < S.MAX_ATTEMPTS:
-        # Only retry if an unused real project would actually close a gap.
-        # Otherwise the candidate simply lacks that skill, and looping again
-        # would either change nothing or pressure the model to invent it.
+    if attempts < S.MAX_ATTEMPTS:
+        missing = (state.get("coverage") or {}).get("missing", [])
         used = {p["id"] for p in state.get("selected_projects", []) if "id" in p}
-        reachable = S.retry_could_help(cov.get("missing", []),
-                                       H.load_experience_pool(), used)
+        reachable = S.retry_could_help(missing, H.load_experience_pool(), used)
         if reachable:
-            print(f"  [score] retrying — unused projects cover: "
-                  f"{', '.join(reachable[:4])}")
-            return "retry"
-        print(f"  [score] no unused project covers "
-              f"{', '.join(cov.get('missing', [])[:4])} — not retrying")
+            print(f"  [score] trying another combination - unused projects "
+                  f"cover: {', '.join(reachable[:4])}")
+        else:
+            print(f"  [score] trying another combination - best so far "
+                  f"{best}/100")
+        return "retry"
 
-    if score < S.MIN_SCORE_TO_APPLY:
+    label = ("at target" if best >= S.TARGET_SCORE
+             else f"below the {S.TARGET_SCORE} target")
+    if best < S.MIN_SCORE_TO_APPLY:
         return "next_job"
 
-    print(f"  [score] {score}/100 — above the {S.MIN_SCORE_TO_APPLY} floor, applying")
+    print(f"  [score] best of {S.MAX_ATTEMPTS} combinations: {best}/100 "
+          f"({label}) - applying with that one")
     return "good_enough"
 
 
@@ -360,11 +395,7 @@ def _after_next_job(state: State) -> str:
 
 
 def _make_checkpointer():
-    """SQLite checkpointing so a crash resumes mid-run.
-
-    NOTE: SqliteSaver.from_conn_string() is a *context manager*, so it can't be
-    handed straight to compile(). We own the connection instead.
-    """
+    """SQLite checkpointing so a crash resumes mid-run."""
     conn = sqlite3.connect(str(H.CHECKPOINT_DB), check_same_thread=False)
     return SqliteSaver(conn)
 
@@ -388,8 +419,7 @@ def build_graph():
     g.add_edge("select_projects", "tailor_resume")
     g.add_edge("tailor_resume", "grade_resume")
 
-    # CYCLE 1 (tailoring): grade -> select_projects -> tailor -> grade ...
-    # CYCLE 2 (job search): grade -> next_job -> select_projects -> ...
+    # CYCLE 1 (exploration): grade -> select_projects -> tailor -> grade
     g.add_conditional_edges("grade_resume", _after_grade,
                             {"retry": "select_projects",
                              "next_job": "next_job",

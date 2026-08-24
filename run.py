@@ -1,15 +1,4 @@
-"""
-run.py  —  Start here:  ./venv/bin/python run.py
-
-What happens:
-  1. You say what you're looking for, in plain English
-  2. An LLM expands that into the job titles real postings actually use
-  3. It searches the company boards below — US roles only, strictly
-  4. It picks and tailors a resume, scoring it against the JD until it fits
-  5. It opens the real application form and fills it in
-  6. It PAUSES — you review the browser and click Submit yourself
-  7. You press Enter, and it logs the application to Excel
-"""
+"""Entry point. Run with: python run.py"""
 import json
 import sys
 from datetime import datetime
@@ -19,10 +8,7 @@ import apply
 import llm_tasks
 
 # ======================= EDIT THESE ======================================== #
-# Company Greenhouse boards to search.
-# Only companies on a HOSTED Greenhouse form can be auto-filled — if a board's
-# absolute_url redirects to the company's own careers site (Databricks, Stripe),
-# the browser opens but the fields won't match.
+# Company Greenhouse boards to search
 COMPANY_BOARDS = ["reddit", "anthropic", "scaleai", "chime", "gusto",
                   "figma", "twilio", "affirm"]
 
@@ -35,12 +21,7 @@ SLOW_MO_MS = 300           # pause between browser actions so you can watch it
 
 
 def ask_intent() -> str:
-    """What kind of role are you after? Plain English - an LLM turns it into
-    the title variants postings actually use, so no synonym list to maintain.
-
-    Location is deliberately NOT asked. This searches US roles only, and
-    helpers.is_us_location() enforces that on every posting.
-    """
+    """What kind of role are you after?"""
     print("=" * 66)
     print("  WHAT ARE YOU LOOKING FOR?  (US roles only)")
     print("=" * 66)
@@ -54,14 +35,7 @@ def ask_intent() -> str:
 
 
 def confirm_submitted() -> bool:
-    """The human checkpoint. Returns True only on an explicit typed 'y'.
-
-    A bare input() is not enough here. When stdin is a pipe rather than a
-    terminal - `echo x | python run.py`, a CI job, a nohup'd process - input()
-    hits EOF and returns immediately, and the run sails past the checkpoint as
-    though a human had approved it. Silence must never count as consent on the
-    step that records an application as submitted.
-    """
+    """The human checkpoint."""
     if not sys.stdin.isatty():
         print("\n  stdin is not a terminal, so there is nobody here to approve"
               "\n  this. Run it directly in a terminal to use the checkpoint.")
@@ -70,7 +44,7 @@ def confirm_submitted() -> bool:
         try:
             reply = input(">>> Did you submit it? [y = log it / n = discard]: ").strip().lower()
         except EOFError:
-            print("\n  No input available — treating as NOT submitted.")
+            print("\n  No input available - treating as NOT submitted.")
             return False
         if reply in ("y", "yes"):
             return True
@@ -83,8 +57,7 @@ def main():
     intent = ask_intent()
     app = agent.build_graph()
 
-    # A fresh thread id per run. Reusing one makes LangGraph resume the PREVIOUS
-    # run's checkpoint instead of starting a new search.
+    # A fresh thread id per run
     thread = {"configurable": {"thread_id": f"run-{datetime.now():%Y%m%d-%H%M%S}"}}
 
     print("=== SEARCHING + PREPARING (will pause before you submit) ===\n")
@@ -93,7 +66,7 @@ def main():
     if state.get("error") in ("no_jobs", "no_suitable_jobs"):
         print(f"\nStopped: {state.get('status')}")
         for sk in state.get("skipped_jobs", []):
-            print(f"   skipped {sk['title'][:46]} — {sk['score']}/100")
+            print(f"   skipped {sk['title'][:46]} - {sk['score']}/100")
         print("Try a different search, more boards, or add projects to the pool.")
         return
 
@@ -101,7 +74,7 @@ def main():
     coverage = state.get("coverage") or {}
 
     print("\n=== JOB SELECTED ===")
-    print(f"  {job['title']} @ {job['company']} — {job['location']}")
+    print(f"  {job['title']} @ {job['company']} - {job['location']}")
     print(f"  {job['url']}")
     print(f"  Resume: {state['resume_pdf_path']}")
     print("\n  Resume variant scores:")
@@ -109,10 +82,10 @@ def main():
         print(f"    {sc['resume_id']:<16} {sc['score']}/100")
     print(f"  Projects chosen: "
           f"{', '.join(p['name'][:32] for p in state['selected_projects'])}")
-    print(f"  JD coverage after tailoring: {coverage.get('score')}/100 "
-          f"({state.get('attempts')} pass(es))")
+    print(f"  Best JD coverage: {coverage.get('score')}/100 "
+          f"(best of {state.get('attempts')} project combination(s))")
     for sk in state.get("skipped_jobs", []):
-        print(f"  (skipped {sk['title'][:42]} — {sk['score']}/100)")
+        print(f"  (skipped {sk['title'][:42]} - {sk['score']}/100)")
 
     # ---- Auto-fill the real form (browser stays open for you) ----
     handle = None
@@ -124,7 +97,7 @@ def main():
         def form_answerer(questions):
             """Playwright hands over every question it found, with the real
             options; one call answers them all."""
-            print(f"\n  {len(questions)} question(s) found — asking GPT in one call\n")
+            print(f"\n  {len(questions)} question(s) found - asking GPT in one call\n")
             return llm_tasks.answer_form(questions, summary, context)
 
         before = llm_tasks.CALLS
@@ -133,8 +106,7 @@ def main():
                 job["url"], state["application_fields"], state["open_questions"],
                 slow_mo=SLOW_MO_MS, form_answerer=form_answerer)
         except Exception as exc:
-            # Even if the browser layer fails outright we must still reach the
-            # human checkpoint below — exiting is what closes the window.
+            # Even if the browser layer fails outright we must still reach the human checkpoint below
             import traceback
             traceback.print_exc()
             print(f"\n  Auto-fill failed: {type(exc).__name__}. "

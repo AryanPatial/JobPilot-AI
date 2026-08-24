@@ -1,26 +1,17 @@
-"""
-scoring.py  —  Deterministic résumé/JD coverage score. NO LLM.
-
-Why deterministic: the retry loop in the graph uses this score to decide whether
-to try again. If the LLM graded its own tailoring it would flatter itself and the
-loop would exit immediately at a fake 95.
-
-Why the vocabulary is built from the CANDIDATE'S OWN material: a naive keyword
-scorer rewards stuffing JD terms into bullets, and a retry loop that feeds back
-"you're missing Kubernetes" actively pushes the model to invent Kubernetes
-experience. Here a term only counts if it appears somewhere in the candidate's
-real pool or résumé variants, so the score can never be raised by inventing
-something - only by surfacing something true that was left out.
-"""
+"""Resume/JD scoring and verification. No LLM calls in this file."""
 from __future__ import annotations
 
 import json
 import re
 from pathlib import Path
 
-TARGET_SCORE = 85          # tailoring loop exits at or above this
-MIN_SCORE_TO_APPLY = 70    # below this the job is a bad fit - skip it entirely
-MAX_ATTEMPTS = 3           # hard cap - never loop unbounded
+# Calibrated against 6 real postings x 2 résumé variants (August 2026)
+TARGET_SCORE = 60          # what a good tailoring should reach; reported, not a stop
+MIN_SCORE_TO_APPLY = 40    # the BEST attempt must clear this or the job is skipped
+MAX_ATTEMPTS = 3           # how many DIFFERENT project combinations to try per job
+PERFECT_SCORE = 100        # nothing above it exists, so exploring further is pure waste
+
+# The loop does not exit at TARGET_SCORE
 
 
 # --------------------------------------------------------------------------- #
@@ -28,10 +19,7 @@ MAX_ATTEMPTS = 3           # hard cap - never loop unbounded
 # --------------------------------------------------------------------------- #
 _SPLIT = re.compile(r"[,/|;()]| and ")
 
-# A term earns a place in the vocabulary if it looks like a technology rather
-# than English: an internal capital (PySpark, FastAPI, XGBoost), a digit or
-# hyphen (K-Means, SHA-256, PR-AUC), or a dot (scikit-learn is caught by the
-# hyphen rule; Node.js by this one).
+# A term earns a place in the vocabulary if it looks like a technology rather than English
 _TECHY = re.compile(r"[a-z][A-Z]|[0-9]|-|\.|/")
 
 _STOP = {
@@ -75,12 +63,7 @@ def _technical_terms(text: str) -> set[str]:
 
 
 def build_vocabulary(*json_paths: Path) -> set[str]:
-    """Every term the candidate may truthfully claim, taken from their own files.
-
-    The curated `skills` sections are the authority. Bullets and project names
-    contribute only things that look like technologies, never plain English -
-    otherwise the JD's boilerplate ("teams", "compensation") scores as a skill.
-    """
+    """Every term the candidate may truthfully claim, taken from their own files."""
     vocab: set[str] = set()
     for path in json_paths:
         if not Path(path).exists():
@@ -108,6 +91,11 @@ def build_vocabulary(*json_paths: Path) -> set[str]:
     return vocab
 
 
+def _content_words(phrase: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z0-9+#.-]{3,}", phrase.lower())
+            if w not in _STOP}
+
+
 # --------------------------------------------------------------------------- #
 # Scoring
 # --------------------------------------------------------------------------- #
@@ -126,7 +114,7 @@ def jd_requirements(jd: str, vocab: set[str], *, top: int = 25) -> list[tuple[st
     return hits[:top]
 
 
-def resume_text(resume: dict) -> str:
+def resume_text(resume: dict, *, lower: bool = True) -> str:
     """Flatten a résumé dict to searchable text."""
     parts: list[str] = []
     for job in resume.get("experience", []):
@@ -135,15 +123,12 @@ def resume_text(resume: dict) -> str:
         parts += [proj.get("name", "")] + proj.get("bullets", [])
     skills = resume.get("skills", {})
     parts += list(skills.values()) if isinstance(skills, dict) else list(skills)
-    return " ".join(parts).lower()
+    text = " ".join(parts)
+    return text.lower() if lower else text
 
 
 def score_resume(resume: dict, jd: str, vocab: set[str]) -> dict:
-    """Weighted keyword coverage, 0-100, plus the named gaps.
-
-    Returns {score, covered, missing, requirements} — `missing` is what the
-    retry loop feeds back so selection can surface a better real project.
-    """
+    """Weighted keyword coverage, 0-100, plus the named gaps."""
     reqs = jd_requirements(jd, vocab)
     if not reqs:
         return {"score": 100, "covered": [], "missing": [], "requirements": []}
@@ -166,15 +151,98 @@ def score_resume(resume: dict, jd: str, vocab: set[str]) -> dict:
     }
 
 
+def gap_fit(project: dict, missing: list[str]) -> int:
+    """How many of the JD's missing terms this project genuinely evidences."""
+    if not missing:
+        return 0
+    blob = (project["name"] + " " + " ".join(project["bullets"])
+            + " " + " ".join(project.get("tags", []))).lower()
+    exact = sum(1 for term in missing if term in blob)
+    # Requirements arrive as phrases now; fall back to content-word overlap so ranking still w
+    return exact or gap_fit_phrase(project, missing)
+
+
+# --------------------------------------------------------------------------- #
+# Verified scoring: the model cites evidence, THIS code decides the number.
+# --------------------------------------------------------------------------- #
+MIN_EVIDENCE_CHARS = 25    # below this a "quote" is too short to prove anything
+
+
+def _norm(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def verify_and_score(graded_text: str, requirements: list[dict]) -> dict:
+    """Check every citation against the real resume, then compute the score."""
+    if not requirements:
+        return {"score": 100, "covered": [], "missing": [], "fabricated": [],
+                "requirements": [], "detail": []}
+
+    haystack = _norm(graded_text)
+    covered, missing, fabricated, detail = [], [], [], []
+    got = total = 0
+
+    for r in requirements:
+        weight = 2 if r.get("must_have") else 1
+        total += weight
+        ev = _norm(r.get("evidence", ""))
+        name = r["requirement"]
+
+        if not ev:
+            verdict = "unmet"
+        elif len(ev) < MIN_EVIDENCE_CHARS:
+            verdict = "unmet"          # too short to prove anything
+        elif ev in haystack:
+            verdict = "met"
+        else:
+            verdict = "fabricated"
+
+        if verdict == "met":
+            got += weight
+            covered.append(name)
+        else:
+            missing.append(name)
+            if verdict == "fabricated":
+                fabricated.append(name)
+        detail.append({"requirement": name, "must_have": r.get("must_have"),
+                       "verdict": verdict})
+
+    return {"score": round(100 * got / total) if total else 100,
+            "covered": covered, "missing": missing, "fabricated": fabricated,
+            "requirements": [r["requirement"] for r in requirements],
+            "detail": detail}
+
+
+def introduced_terms(resume: dict, *source_paths: Path) -> list[str]:
+    """Words on the finished résumé that appear in NONE of the candidate's files."""
+    source = set()
+    for path in source_paths:
+        if Path(path).exists():
+            source |= _content_words(Path(path).read_text(encoding="utf-8"))
+    return sorted(_content_words(resume_text(resume, lower=False)) - source)
+
+
+def unclaimable_terms(resume: dict, vocab: set[str]) -> list[str]:
+    """Technology names on the finished resume that appear nowhere in the"""
+    # needs original case
+    companies = {c.lower() for j in resume.get("experience", [])
+                 for c in re.split(r"[^A-Za-z0-9]+", j.get("company", "")) if c}
+    return sorted(_technical_terms(resume_text(resume, lower=False))
+                  - vocab - companies)
+
+
+def gap_fit_phrase(project: dict, missing: list[str]) -> int:
+    """How well an unused project speaks to the missing REQUIREMENTS."""
+    if not missing:
+        return 0
+    blob = _content_words(project["name"] + " " + " ".join(project["bullets"])
+                          + " " + " ".join(project.get("tags", [])))
+    return sum(len(_content_words(m) & blob) for m in missing)
+
+
 def retry_could_help(missing: list[str], pool: list[dict],
                      current_ids: set[str]) -> list[str]:
-    """Which missing terms does some UNUSED pool project actually evidence?
-
-    Without this the retry loop spends its whole budget rediscovering that the
-    candidate simply doesn't have BigQuery. Retrying is only worthwhile when a
-    real project we didn't pick would close a real gap - anything else would
-    require inventing, which is the one thing the system must never do.
-    """
+    """Which missing terms does some UNUSED pool project actually evidence?"""
     if not missing:
         return []
     reachable = []

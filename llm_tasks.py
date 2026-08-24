@@ -1,17 +1,4 @@
-"""
-llm_tasks.py  —  Every decision the LLM is allowed to make, in one place.
-
-Rules that apply to everything in this file:
-
-  * Batch, never loop. One call judging 40 jobs beats 40 calls judging one.
-  * Structured output only. Every function returns a validated Pydantic object.
-  * The LLM decides *relevance and wording*. It never decides a fact about the
-    candidate - those come from candidate_profile.json via helpers.
-  * Legal / EEO / attested answers never reach this file at all.
-
-helpers.call_llm() is the single provider swap point; nothing here knows or
-cares whether it's talking to GPT or Gemini.
-"""
+"""All LLM prompts. Every function returns a validated Pydantic object."""
 from __future__ import annotations
 
 import json
@@ -22,18 +9,13 @@ from pydantic import BaseModel, Field
 
 import helpers as H
 
-# How many jobs go into ONE judging call. Every candidate is judged - this is
-# the chunk size, not a cap. Truncating instead of chunking meant a search that
-# returned 105 candidates only ever considered the first 40, and because boards
-# come back roughly alphabetically those 40 were nearly all Staff/Senior roles,
-# so almost nothing survived and the "try the next job" cycle had nowhere to go.
+# How many jobs go into ONE judging call
 JUDGE_CHUNK = 40
 
 # Stop once we have this many good jobs - no point paying to judge the rest.
 ENOUGH_MATCHES = 12
 
-# Every LLM call made this run, so the terminal can show how much of the form
-# was the model and how much was deterministic rules.
+# Every LLM call made this run, so the terminal can show how much of the form was the mode
 CALLS = 0
 
 
@@ -51,13 +33,7 @@ class ExpandedQuery(BaseModel):
 
 
 def expand_query(intent: str, *, limit: int = 28) -> list[str]:
-    """'gen AI roles' -> [AI Engineer, LLM Engineer, Applied Scientist,
-    Member of Technical Staff, Forward Deployed Engineer, ...]
-
-    Deliberately broad: this is a keyword pre-filter, and a false positive here
-    is cheap (the judge in step 2 removes it) while a false negative is not -
-    a title we never fetch can never be recovered.
-    """
+    """'gen AI roles' -> [AI Engineer, LLM Engineer, Applied Scientist,"""
     _count()
     result: ExpandedQuery = H.call_llm(
         "You expand a job-search intent into the title keywords that real postings "
@@ -105,15 +81,7 @@ class JobVerdicts(BaseModel):
 
 
 def judge_jobs(intent: str, jobs: list[dict], years_experience: float) -> list[dict]:
-    """Judge EVERY candidate for intent fit and seniority fit (spec items 1
-    and 3), in chunks of JUDGE_CHUNK.
-
-    Keyword matching cannot see that a "Staff ML Engineer, 8+ years" posting is
-    a bad use of an application when you have ~2 years. This can.
-
-    Returns the jobs that passed on both axes, each with `verdict` attached.
-    Stops early once ENOUGH_MATCHES have been found.
-    """
+    """Judge EVERY candidate for intent fit and seniority fit (spec items 1"""
     kept: list[dict] = []
     if not jobs:
         return kept
@@ -121,7 +89,7 @@ def judge_jobs(intent: str, jobs: list[dict], years_experience: float) -> list[d
     for start in range(0, len(jobs), JUDGE_CHUNK):
         chunk = jobs[start:start + JUDGE_CHUNK]
         listing = "\n".join(
-            f"{i}. {j['title']}  [{j.get('location', '')}]  — {_one_line(j)}"
+            f"{i}. {j['title']}  [{j.get('location', '')}]  - {_one_line(j)}"
             for i, j in enumerate(chunk))
 
         _count()
@@ -132,10 +100,10 @@ def judge_jobs(intent: str, jobs: list[dict], years_experience: float) -> list[d
             "(recent graduate level)\n\n"
             f"JOBS:\n{listing}\n\n"
             "For EVERY job above return a verdict with its index.\n"
-            "  matches_intent — does the actual role fit the intent? Reject "
+            "  matches_intent - does the actual role fit the intent? Reject "
             "postings that merely mention the keywords (a Sales role at an AI "
             "company), and reject non-engineering roles.\n"
-            "  seniority_ok  — plausible for this experience level? Reject "
+            "  seniority_ok  - plausible for this experience level? Reject "
             "Staff, Senior Staff, Principal, Lead, Manager, Head, Director, "
             "Architect, and anything demanding 5+ years. Accept new-grad, "
             "junior, associate, mid-level, 'Senior' only when the posting asks "
@@ -153,7 +121,7 @@ def judge_jobs(intent: str, jobs: list[dict], years_experience: float) -> list[d
         done = min(start + JUDGE_CHUNK, len(jobs))
         print(f"  [judge] {done}/{len(jobs)} screened, {len(kept)} kept")
         if len(kept) >= ENOUGH_MATCHES:
-            print(f"  [judge] {ENOUGH_MATCHES} good matches found — stopping early")
+            print(f"  [judge] {ENOUGH_MATCHES} good matches found - stopping early")
             break
 
     return kept
@@ -174,20 +142,37 @@ class ContentSelection(BaseModel):
     picks: List[ProjectPick] = Field(description="Best projects, strongest first")
 
 
-def select_content(jd: str, pool: list[dict], *, n: int = 3,
-                   missing_skills: list[str] | None = None) -> list[dict]:
-    """Choose which of the candidate's REAL projects belong on this résumé.
+def _force_new_combination(chosen: list[dict], pool: list[dict],
+                           avoid: set[tuple], missing: list[str] | None,
+                           n: int) -> list[dict]:
+    """Swap projects until the set is one we have not scored before."""
+    import scoring as S
 
-    This is selection, not generation - the crucial distinction. The retry loop
-    calls this again with `missing_skills` from the deterministic scorer, so the
-    way to raise the score is to swap in a different true project, never to
-    invent a skill. That keeps the "never invent" rule structurally enforced
-    rather than merely requested in a prompt.
-    """
+    picked_ids = {c["id"] for c in chosen}
+    spare = sorted((p for p in pool if p["id"] not in picked_ids),
+                   key=lambda p: -S.gap_fit(p, missing or []))
+
+    # Replace the weakest pick first (the model ordered them strongest-first).
+    for slot in range(len(chosen) - 1, -1, -1):
+        for cand in spare:
+            trial = list(chosen)
+            trial[slot] = {**cand, "why": "swapped in to try a different angle"}
+            if tuple(sorted(c["id"] for c in trial)) not in avoid:
+                return trial
+    return chosen          # pool exhausted - every combination already tried
+
+
+def select_content(jd: str, pool: list[dict], *, n: int = 3,
+                   missing_skills: list[str] | None = None,
+                   avoid: list | None = None) -> list[dict]:
+    """Choose which of the candidate's REAL projects belong on this résumé."""
+    # Send every bullet in full
     catalogue = "\n".join(
         f"- {p['id']}  |  {p['name']}  |  tags: {', '.join(p.get('tags', []))}\n"
-        f"    {' '.join(p['bullets'])[:260]}"
+        f"    {' '.join(p['bullets'])}"
         for p in pool)
+
+    avoid_sets = {tuple(sorted(a)) for a in (avoid or [])}
 
     nudge = ""
     if missing_skills:
@@ -195,6 +180,10 @@ def select_content(jd: str, pool: list[dict], *, n: int = 3,
                  f"{', '.join(missing_skills[:10])}. Prefer projects that genuinely "
                  "demonstrate them. If no project does, pick on overall relevance - "
                  "do NOT stretch a project to claim something it does not show.\n")
+    if avoid_sets:
+        already = "; ".join(" + ".join(a) for a in sorted(avoid_sets))
+        nudge += ("\nThese combinations have already been tried and scored, so "
+                  f"return a DIFFERENT set: {already}\n")
 
     _count()
     result: ContentSelection = H.call_llm(
@@ -218,7 +207,86 @@ def select_content(jd: str, pool: list[dict], *, n: int = 3,
             break
         if p not in chosen and p["id"] not in {c["id"] for c in chosen}:
             chosen.append({**p, "why": "filler - model returned too few picks"})
-    return chosen[:n]
+    chosen = chosen[:n]
+
+    # The model was told what has been tried; it does not always listen.
+    if tuple(sorted(c["id"] for c in chosen)) in avoid_sets:
+        chosen = _force_new_combination(chosen, pool, avoid_sets, missing_skills, n)
+    return chosen
+
+
+# ====================================================== 4. GRADING ========= #
+class Requirement(BaseModel):
+    """One thing the JD asks for, and the resume line that proves it."""
+    requirement: str = Field(description="What the job asks for, in the JD's own words, "
+                                         "under 12 words")
+    must_have: bool = Field(description="True if the JD states it as required, "
+                                        "False if preferred/nice-to-have")
+    evidence: str = Field(default="", description="ONE bullet from the resume, copied "
+                                                  "EXACTLY character for character, that "
+                                                  "already demonstrates this. Empty string "
+                                                  "if no bullet demonstrates it.")
+
+
+class Requirements(BaseModel):
+    requirements: List[Requirement]
+
+
+def extract_requirements(jd: str) -> list[dict]:
+    """What this job requires - derived from the JD ALONE, once per job."""
+    _count()
+    result: Requirements = H.call_llm(
+        "List what this job requires, for scoring résumés against it.\n\n"
+        "List 8 to 15 requirements THAT A RESUME CAN DEMONSTRATE: technologies, "
+        "technical skills, kinds of work done, scale, domain, years of "
+        "experience, education. Use the JD's own language. Mark each as required "
+        "or preferred.\n"
+        "  * EXCLUDE anything no résumé could ever evidence - willingness to "
+        "travel, communication style, cooperation mindset, comfort with "
+        "ambiguity, attending conferences, enthusiasm. Listing those makes every "
+        "candidate look equally unqualified and tells the reader nothing.\n"
+        "  * Split broad responsibilities into the technical capability "
+        "underneath: 'advise customers on LLM architecture' -> 'designs LLM "
+        "application architecture'.\n"
+        "  * Leave every `evidence` field empty. You are not looking at a résumé.\n\n"
+        f"JOB DESCRIPTION:\n{jd[:6000]}",
+        structured_schema=Requirements, temperature=0.0)
+    return [{"requirement": r.requirement, "must_have": r.must_have} for r in result.requirements]
+
+
+def cite_evidence(requirements: list[dict], resume_text: str) -> list[dict]:
+    """For each fixed requirement, quote the résumé line that proves it."""
+    listing = "\n".join(f"{i}. [{'required' if r['must_have'] else 'preferred'}] "
+                        f"{r['requirement']}" for i, r in enumerate(requirements))
+    _count()
+    result: Requirements = H.call_llm(
+        "For each requirement below, find a résumé line that ALREADY "
+        "demonstrates it.\n\n"
+        "Return one entry per requirement, in the same order, copying the "
+        "requirement text back verbatim. Rules for `evidence`:\n"
+        "  * Copy the résumé line EXACTLY, character for character. Do not "
+        "paraphrase, shorten, merge or clean it up.\n"
+        "  * A line counts only if it genuinely shows the requirement. Related "
+        "subject matter is not evidence.\n"
+        "  * If nothing in the résumé demonstrates it, leave evidence EMPTY. An "
+        "empty evidence field is the correct answer for some requirements - do "
+        "not stretch to fill it.\n\n"
+        f"REQUIREMENTS:\n{listing}\n\n"
+        f"RESUME:\n{resume_text[:6000]}",
+        structured_schema=Requirements, temperature=0.0)
+
+    # Trust the fixed list for wording and weight; take only evidence from the model, matched
+    cited = {i: r.evidence for i, r in enumerate(result.requirements)}
+    by_text = {_norm_req(r.requirement): r.evidence for r in result.requirements}
+    out = []
+    for i, req in enumerate(requirements):
+        ev = by_text.get(_norm_req(req["requirement"]), cited.get(i, ""))
+        out.append({**req, "evidence": ev or ""})
+    return out
+
+
+def _norm_req(text: str) -> str:
+    return re.sub(r"[^a-z0-9 ]", "", text.lower()).strip()
 
 
 _CHOICE_CACHE_PATH = H.OUTPUT_DIR / "choices.json"
@@ -236,19 +304,7 @@ def _cache() -> dict:
 
 
 def profile_summary(resume: dict | None = None) -> str:
-    """Everything the model needs to answer a form question truthfully.
-
-    Two halves, and the split matters:
-
-      FACTS      - identity, work authorisation, EEO answers. Straight from
-                   candidate_profile.json, never inferred.
-      EVIDENCE   - education, employment history, projects and skills, from the
-                   resume variants and the experience pool.
-
-    The evidence half is what lets "Do you have expertise coding in Python?" be
-    answered from the actual skills list rather than guessed, and stops the
-    model claiming a technology that appears nowhere in the candidate's work.
-    """
+    """Everything the model needs to answer a form question truthfully."""
     prof = H.load_profile()
     ident, ans = prof["identity"], prof["application_answers"]
 
@@ -258,10 +314,7 @@ def profile_summary(resume: dict | None = None) -> str:
     from datetime import date
     today = date.today()
 
-    # The model has no clock, and it is bad at date arithmetic even when given
-    # one: told "today is August 2026" and "degree ends May 2026" it still
-    # answered "degree in progress". So work it out here and hand over the
-    # conclusion, not the inputs.
+    # The model has no clock, and it is bad at date arithmetic even when given one: told "toda
     def _finished(dates: str) -> bool | None:
         end = (dates or "").split("\u2013")[-1].split("-")[-1].strip()
         if not end or "present" in end.lower():
@@ -278,7 +331,7 @@ def profile_summary(resume: dict | None = None) -> str:
         state = ("COMPLETED" if done else
                  "IN PROGRESS" if done is False else "dates unclear")
         edu_lines.append(f"    {e['degree']}, {e['school']} "
-                         f"({e.get('dates', '')}) — {state}")
+                         f"({e.get('dates', '')}) - {state}")
     studying = any("IN PROGRESS" in l for l in edu_lines)
 
     lines = [
@@ -300,6 +353,9 @@ def profile_summary(resume: dict | None = None) -> str:
         f"Willing to relocate: {ans['willing_to_relocate']}. "
         f"Gender: {one(ans['gender'])}. Race/ethnicity: {one(ans['race_ethnicity'])}. "
         f"Not a veteran. No disability.",
+        # Omitted once, and the model answered "How did you hear about this job?" with "I found th
+        f"How they heard about the job: {one(ans['how_did_you_hear'])}. "
+        f"Use this verbatim - do not substitute a job board or referral.",
     ]
 
     for e in prof.get("education", []):
@@ -353,11 +409,7 @@ def profile_summary(resume: dict | None = None) -> str:
 
 
 # ================================================= 6. CIRCUMSTANCE RULES == #
-# Questions with a definite stored answer are resolved HERE, from the profile,
-# and never reach the model. Prompting was tried twice and failed twice: told
-# "referred by an employee: No" the model still answered Yes, and it repeatedly
-# claimed a prior interview it had no basis for. A fact with a recorded answer
-# is a lookup, not a judgement call.
+# Questions with a definite stored answer are resolved HERE, from the profile, and never r
 CIRCUMSTANCE_RULES: list[tuple[str, str]] = [
     (r"interview.*(this company|with us|here|at \w+)\b.*(before|previously|past|prior)",
      "interviewed_at_this_company_recently"),
@@ -367,7 +419,8 @@ CIRCUMSTANCE_RULES: list[tuple[str, str]] = [
     (r"\binterview", "interviewed_anywhere_last_3_months"),      # catch-all
     (r"(previously|ever|before).*appl(y|ied)", "previously_applied_to_this_company"),
     (r"appl(y|ied).*(before|previously|in the past)", "previously_applied_to_this_company"),
-    (r"referr", "referred_by_an_employee"),
+    # \b stops this matching inside 'preferred'
+    (r"\breferred\b|\bemployee referral\b", "referred_by_an_employee"),
     (r"currently employed|are you employed", "currently_employed"),
     (r"notice period", "notice_period"),
     (r"other offers|competing offers|offers pending", "other_offers_pending"),
@@ -422,24 +475,11 @@ class FormAnswers(BaseModel):
 
 
 def answer_form(questions: list[dict], profile: str, job_context: str) -> dict[int, dict]:
-    """Answer an ENTIRE application form in one call.
-
-    `questions` is what Playwright actually found on the page:
-        [{"idx": 9, "label": "...", "kind": "dropdown", "options": [...]}, ...]
-
-    One call rather than one per box, for three reasons: the model sees the
-    whole form at once (so it notices the same question asked twice in
-    different words), it costs a fraction as much, and the caller can then
-    fill the page in a single top-to-bottom pass.
-
-    Returns {idx: {"option": int|None, "text": str|None, "why": str}}.
-    Anything legally binding is filtered out by the caller before it gets here.
-    """
+    """Answer an ENTIRE application form in one call."""
     if not questions:
         return {}
 
-    # Resolve anything with a stored answer FIRST, deterministically, and drop
-    # it from the batch. The model is never asked about a fact we already know.
+    # Resolve anything with a stored answer FIRST, deterministically, and drop it from the bat
     out: dict[int, dict] = {}
     remaining = []
     for q in questions:

@@ -1,10 +1,23 @@
+# Secrets and personal data — never commit
 .env
+data/candidate_profile.json
+data/resumes/gen_ai.json
+data/resumes/data_analytics.json
+
+# Local recordings / scratch media
+z video recording/
+*.mp4
+*.m4a
+
+# Python
 __pycache__/
 *.pyc
 .venv/
 venv/
+
+# Generated output: PDFs, tracker, checkpoints, cached answers
 output/
 *.sqlite
+
+# macOS
 .DS_Store
-{src/
-{data/

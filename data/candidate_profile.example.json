@@ -1,37 +1,37 @@
 {
   "identity": {
-    "full_name": "Aryan Patial",
-    "first_name": "Aryan",
-    "last_name": "Patial",
-    "location": "Dallas, TX",
-    "phone": "(940) 312-9432",
-    "email": "kakupatial2000@gmail.com",
-    "linkedin": "linkedin.com/in/aryan-patial",
-    "github": "github.com/aryanpatial"
+    "full_name": "Alex Carter",
+    "first_name": "Alex",
+    "last_name": "Carter",
+    "location": "Austin, TX",
+    "phone": "(555) 010-0100",
+    "email": "you@example.com",
+    "linkedin": "linkedin.com/in/your-handle",
+    "github": "github.com/your-handle"
   },
   "education": [
     {
-      "school": "University of North Texas",
-      "location": "Denton, TX",
+      "school": "State University",
+      "location": "Austin, TX",
       "degree": "Master of Science in Data Science",
       "detail": "GPA 4.0/4.00",
-      "dates": "August 2024 \u2013 May 2026",
+      "dates": "August 2024 – May 2026",
       "coursework": "Statistical Modeling, Machine Learning, Database Management, Data Visualization, Data Mining, Data Retrieval"
     },
     {
-      "school": "Dr. APJ Abdul Kalam Technical University",
-      "location": "Lucknow, India",
+      "school": "Example Institute of Technology",
+      "location": "Springfield",
       "degree": "Bachelor of Technology in Information Technology",
       "detail": "CGPA 8.31/10",
-      "dates": "August 2019 \u2013 June 2023",
+      "dates": "August 2019 – June 2023",
       "coursework": null
     }
   ],
-  "_note": "These are your confirmed application answers. The bot reads facts from here and never guesses them. Replace the email above with your throwaway test email before running.",
+  "_note": "EXAMPLE FILE - all values are placeholders. Copy to candidate_profile.json (gitignored) and fill in your own.",
   "application_answers": {
     "work_authorization_us": "Yes",
-    "requires_sponsorship_now_or_future": "Yes",
-    "visa_status": "F-1 OPT",
+    "requires_sponsorship_now_or_future": "No",
+    "visa_status": "Citizen",
     "willing_to_relocate": "Yes",
     "salary_expectation": "AUTO",
     "earliest_start_date": "AUTO",
@@ -72,9 +72,9 @@
     "interviewed_anywhere_last_3_months": "No",
     "previously_applied_to_this_company": "No",
     "referred_by_an_employee": "No",
-    "currently_employed": "Yes - part-time Data Analyst at the University of North Texas",
+    "currently_employed": "Yes - part-time Data Analyst at State University",
     "notice_period": "None - available immediately",
-    "deadlines_or_timeline_constraints": "No hard deadlines. On F-1 OPT, so start date is flexible subject to standard work-authorization paperwork.",
+    "deadlines_or_timeline_constraints": "No hard deadlines. Start date is flexible.",
     "other_offers_pending": "No",
     "criminal_record": "No",
     "can_travel": "Yes"

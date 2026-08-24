@@ -36,8 +36,17 @@ cp .env.example .env          # add your API key
 WeasyPrint needs system libraries:
 `brew install pango` (macOS) · `apt-get install libpango-1.0-0 libpangocairo-1.0-0` (Ubuntu)
 
-Before the first run, fill in `data/candidate_profile.json` — your identity and
-every application answer live there.
+Before the first run, create your profile from the example and fill it in:
+
+```bash
+cp data/candidate_profile.example.json  data/candidate_profile.json
+cp data/resumes/gen_ai.example.json      data/resumes/gen_ai.json
+cp data/resumes/data_analytics.example.json data/resumes/data_analytics.json
+```
+
+Your identity and every application answer live there. That file is gitignored
+and must stay that way — it holds your phone number, visa status and EEO
+answers, and none of that belongs in a public repository.
 
 To test one piece without running the whole pipeline:
 
@@ -100,14 +109,24 @@ with the branch they take.
 
 ### The two cycles
 
-**Cycle 1 — tailoring.** `grade_resume` scores the tailored résumé against the
-JD. Below target, it loops back to *selection*, not tailoring: the fix is to
-surface a different real project, never to reword harder. Capped at 3 attempts,
-and it exits early when no unused project could close the gap — because the
-only other way to raise the score would be to invent something.
+**Cycle 1 — exploration.** `grade_resume` scores the tailored résumé against
+the JD, then loops back to *selection*, not tailoring: the fix is to surface a
+different real project, never to reword harder. It runs the full budget of
+`MAX_ATTEMPTS` combinations every time and applies with the **highest-scoring
+one**, not the first acceptable one — a 91 found on the third combination is a
+better résumé than the 86 that happened to come up first, and since the scorer
+is deterministic and free, the only cost of looking is the select + tailor
+calls. `select_content` is told which combinations have already been scored,
+and `_force_new_combination` swaps a project deterministically when the model
+returns a set it has already given, so no pass is spent re-scoring the same
+résumé.
 
-**Cycle 2 — job skipping.** If coverage is still under 70 after tailoring, the
-JD genuinely doesn't line up with the candidate's history. `next_job` abandons
+The one early exit is a **perfect 100**, and it is not a threshold judgement:
+at 100 every JD requirement the candidate could evidence is already on the
+résumé, so no other combination can beat it. Everything below 100 keeps looking.
+
+**Cycle 2 — job skipping.** If the *best* of those combinations is still under
+70, the JD genuinely doesn't line up with the candidate's history. `next_job` abandons
 that posting and moves to the next candidate rather than spending an
 application on a poor fit.
 
@@ -130,13 +149,13 @@ Execution order, top to bottom:
 
 | # | File | Lines | What it does |
 |---|---|---|---|
-| 1 | **run.py** | 170 | Entry point. Asks what you're looking for, builds the graph, runs it, opens the browser, holds the human checkpoint, resumes the graph to log. |
-| 2 | **agent.py** | 397 | The graph itself: `State`, the output schemas, all 10 node functions, the routing conditions, `build_graph()`. |
-| 3 | **helpers.py** | 525 | Tools the nodes call. LLM access with failover, Greenhouse search, the US filter, salary/date/experience logic, PDF rendering, the Excel tracker. |
-| 4 | **llm_tasks.py** | 369 | Every decision the model is allowed to make, batched and schema-validated. |
-| 5 | **scoring.py** | 190 | Deterministic JD coverage. No LLM anywhere in this file. |
+| 1 | **run.py** | 173 | Entry point. Asks what you're looking for, builds the graph, runs it, opens the browser, holds the human checkpoint, resumes the graph to log. |
+| 2 | **agent.py** | 504 | The graph itself: `State`, the output schemas, all 10 node functions, the routing conditions, `build_graph()`. |
+| 3 | **helpers.py** | 564 | Tools the nodes call. LLM access with failover, Greenhouse search, the US filter, salary/date/experience logic, PDF rendering, the Excel tracker. |
+| 4 | **llm_tasks.py** | 658 | Every decision the model is allowed to make, batched and schema-validated. |
+| 5 | **scoring.py** | 355 | Citation verification, the invention guard, and the score arithmetic. No LLM anywhere in this file. |
 | 6 | **apply.py** | 451 | Browser automation. Reads the form, fills it, never submits. Imports nothing from the rest of the project. |
-| — | **check.py** | 211 | Test any single piece without running the pipeline. |
+| — | **check.py** | 308 | Test any single piece without running the pipeline. |
 
 ### What each one is for
 
@@ -158,9 +177,10 @@ PDF rendering, and the tracker. Every function works standalone.
 `select_content` picks projects, `answer_form` answers a whole application form
 in a single call. All return validated Pydantic objects.
 
-**`scoring.py`** — the résumé/JD coverage score. Deliberately has no LLM: a
-model grading its own tailoring flatters itself and the retry loop would exit
-at a fake 95.
+**`scoring.py`** — verification and arithmetic. The model supplies evidence;
+this file decides the number. `verify_and_score` checks every citation against
+the real résumé, `introduced_terms` is the anti-invention guard, and the old
+keyword scorer is kept as a diagnostic. No LLM call is made from this file.
 
 **`apply.py`** — imports only `re` and `pathlib`. It receives a finished
 dictionary and a callback, and knows nothing about profiles, LangGraph, or
@@ -171,15 +191,34 @@ replaced on its own.
 
 | Path | Contents |
 |---|---|
-| `data/candidate_profile.json` | Identity, application answers, screening answers. The source of truth for every fact. |
+| `data/candidate_profile.example.json` | Placeholder profile, committed. Copy it to create your own. |
+| `data/candidate_profile.json` | Identity, application answers, screening answers. The source of truth for every fact. **Gitignored — never commit it.** |
 | `data/experience_pool.json` | Every real project. `select_projects` chooses from these per job. |
 | `data/resumes/*.json` | Two base variants — experience and skills. |
 | `templates/resume.html` | Jinja + print CSS. Code owns the layout. |
-| `output/` | Generated PDFs, `applications.xlsx`, checkpoints, cached answers, the last fill report. Gitignored. |
+| `output/resumes/` | `<Name>_<Company>_<Role>.pdf` — the role is in the filename because one company can have several open roles. |
+| `output/` | `applications.xlsx`, checkpoints, cached answers, the last fill report. Gitignored. |
 
 ---
 
 ## Design decisions
+
+**The model supplies evidence; code computes the score.**
+The scorer does not ask "how good is this résumé" — a model grading work it just
+produced returns a flattering number. It asks the model to name what the JD
+requires and then *quote the résumé line that proves each one*, and
+`verify_and_score` checks every quotation against the actual résumé. Paraphrased
+or invented citations are recorded as `fabricated` and count as **not met**, so
+the only way the number rises is for a real bullet to genuinely cover a real
+requirement. Requirements are extracted **once per job** and reused for every
+project combination, so "best of three" compares three attempts at the same exam
+rather than three different ones.
+
+The keyword scorer this replaced graded a 7,473-character JD against five terms
+— `ai`, `llm`, `api`, `mcp`, `python`, with `ai` alone worth 75% — and returned
+100/100 for a résumé that met 4 of 15 real requirements. Project choice moved it
+by at most 15 points, which is why the exploration loop returned identical
+scores three passes running.
 
 **Facts come from the file; the model supplies wording.**
 Work authorisation, sponsorship, visa status and EEO answers are read from
@@ -193,9 +232,12 @@ bullet; it cannot change the layout.
 
 **Selection, not generation.**
 Tailoring only rewords bullets that already exist, and the retry loop raises the
-score by choosing a *different real project*, never by adding a claim. The
-scorer's vocabulary is built from the candidate's own files, so a term the
-candidate cannot evidence is not even scoreable.
+score by choosing a *different real project*, never by adding a claim.
+`introduced_terms` enforces it after the fact: every content word on the finished
+page must already appear somewhere in the candidate's source files, and one that
+does not was put there by the rewrite. It deliberately does not ask whether a
+word *looks* like a technology — the shape-based version it replaced caught
+`HashiCorp` and `SHA-256` but walked straight past `Kubernetes` and `Terraform`.
 
 **Some questions are never the model's to answer.**
 `NEVER_ANSWER` blocks arbitration agreements, signatures, initials, background
@@ -234,8 +276,10 @@ There is no submit-click anywhere in the codebase.
 - **Single-page forms only.** Multi-page flows such as Workday are not handled.
 - **Only the first 40 candidates are judged** (`JUDGE_BATCH_LIMIT`). On a wide
   search the rest are dropped.
-- **The pool is the ceiling.** Selection can only surface what is in
-  `experience_pool.json`. If a JD wants a technology no project evidences, the
+- **The pool is the ceiling, and only 3 of it ship.** Selection can only surface
+  what is in `experience_pool.json`, and `select_content(n=3)` puts three
+  projects on the résumé — so most of the pool is unused on any given
+  application by design. If a JD wants a technology no project evidences, the
   score stays low and the job is skipped rather than the gap being invented.
 - **The model can be confident about facts it cannot know.** It has been seen
   answering "have you interviewed here before?" with no basis for it. Questions
@@ -260,7 +304,16 @@ GEMINI_MODEL=gemini-flash-latest
 Thresholds live in `scoring.py`:
 
 ```python
-TARGET_SCORE       = 85   # tailoring loop exits at or above this
-MIN_SCORE_TO_APPLY = 70   # below this the job is skipped entirely
-MAX_ATTEMPTS       = 3    # hard cap on the tailoring cycle
+TARGET_SCORE       = 60   # what a good tailoring should reach — reported, not a stop
+MIN_SCORE_TO_APPLY = 40   # the BEST attempt must clear this or the job is skipped
+MAX_ATTEMPTS       = 3    # how many different project combinations to try per job
+PERFECT_SCORE      = 100  # the only early exit — nothing above it exists
 ```
+
+Calibrated against 6 real postings × 2 résumé variants: best-per-job came out
+**43–68, median 50**. Verified scoring is a much harsher scale than keyword
+counting, so these are not the old numbers renamed — carrying 70/85 across would
+have skipped every job. Recalibrate if you change the pool substantially.
+
+Raising `MAX_ATTEMPTS` explores more combinations and usually finds a higher
+score, at two extra LLM calls per pass.

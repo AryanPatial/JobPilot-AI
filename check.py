@@ -1,13 +1,5 @@
-"""
-check.py  —  Test one piece at a time instead of running the whole pipeline.
-
-    ./venv/bin/python check.py                 list the checks
-    ./venv/bin/python check.py location        run one
-    ./venv/bin/python check.py free            run everything that costs nothing
-
-Checks marked FREE use no LLM and no browser, so run them as often as you like.
-Checks marked $ spend OpenAI credit; BROWSER opens a real Chromium window.
-"""
+"""Manual checks. Run: python check.py free"""
+import json
 import sys
 
 CHECKS = {}
@@ -92,7 +84,8 @@ def _search():
 @check("pdf", note="render a tailored resume to PDF")
 def _pdf():
     import helpers as H, os
-    path = H.render_resume_pdf(H.load_resume_variants()[0], "CheckScript")
+    path = H.render_resume_pdf(H.load_resume_variants()[0], "CheckScript",
+                               "Machine Learning Engineer, Ranking")
     print(f"  {path}  ({os.path.getsize(path):,} bytes)")
     return os.path.getsize(path) > 10_000
 
@@ -135,7 +128,7 @@ def _blocked():
 def _checkpoint():
     import run
     if sys.stdin.isatty():
-        print("  running in a terminal — the checkpoint would prompt you.")
+        print("  running in a terminal - the checkpoint would prompt you.")
         print("  to prove it refuses a pipe:  echo | ./venv/bin/python check.py checkpoint")
         return True
     ok = run.confirm_submitted() is False
@@ -159,12 +152,64 @@ def _circumstances():
         ok = got is not None and got.strip().lower().startswith(want.lower())
         bad += not ok
         print(f"  {'ok  ' if ok else 'FAIL'} {q[:56]:<58} -> {str(got)[:30]}")
-    for q in ["Why Anthropic?*", "Do you have expertise coding in Python?*"]:
+    # Questions a rule must NOT claim
+    for q in ["Why Anthropic?*", "Do you have expertise coding in Python?*",
+              "Preferred First Name", "Preferred Name", "Referral source",
+              "How did you hear about this job?*"]:
         got = T._circumstance_answer(q)
         ok = got is None
         bad += not ok
-        print(f"  {'ok  ' if ok else 'FAIL'} {q[:56]:<58} -> left to the model")
+        print(f"  {'ok  ' if ok else 'FAIL'} {q[:56]:<58} -> "
+              f"{'left to the model' if ok else f'WRONGLY ANSWERED {got!r}'}")
     return bad == 0
+
+
+@check("fabrication", note="an invented citation must score zero")
+def _fabrication():
+    """The safety property of verified scoring, tested without an LLM."""
+    import scoring as S
+    resume = "Built a retrieval-augmented QA service over 900 internal documents"
+    reqs = [
+        {"requirement": "builds RAG systems", "must_have": True,
+         "evidence": "Built a retrieval-augmented QA service over 900 internal documents"},
+        {"requirement": "Kubernetes at scale", "must_have": True,
+         "evidence": "Orchestrated 200-node Kubernetes clusters serving 4M requests"},
+        {"requirement": "paraphrased, not quoted", "must_have": True,
+         "evidence": "Built a RAG service over ~900 docs"},
+        {"requirement": "honestly not covered", "must_have": True, "evidence": ""},
+    ]
+    cov = S.verify_and_score(resume, reqs)
+    want = ["met", "fabricated", "fabricated", "unmet"]
+    bad = 0
+    for d, w in zip(cov["detail"], want):
+        ok = d["verdict"] == w
+        bad += not ok
+        print(f"  {'ok  ' if ok else 'FAIL'} {d['requirement']:<26} -> {d['verdict']}")
+    ok = cov["score"] == 25
+    bad += not ok
+    print(f"  {'ok  ' if ok else 'FAIL'} score {cov['score']}/100 - only the real "
+          f"citation counted (expected 25)")
+    return bad == 0
+
+
+@check("invention", note="a term with no basis in your files is flagged")
+def _invention():
+    import helpers as H, scoring as S
+    srcs = [H.EXPERIENCE_POOL_PATH] + H.resume_variant_paths()
+    clean = H.load_resume_variants()[0]
+    tampered = json.loads(json.dumps(clean))
+    tampered["experience"][0]["bullets"].append(
+        "Deployed Kubernetes and Terraform across a HashiCorp Vault estate")
+    a = S.introduced_terms(clean, *srcs)
+    b = S.introduced_terms(tampered, *srcs)
+    caught = set(b) - set(a)
+    print(f"  untouched résumé  -> {len(a)} flagged (want 0)")
+    print(f"  after inventing   -> {sorted(caught)}")
+    # kubernetes IS in the pool, so it should not be flagged
+    ok = not a and {"terraform", "hashicorp", "vault"} <= caught
+    print(f"  {'ok  ' if ok else 'FAIL'} invented terms caught; 'kubernetes' correctly "
+          f"NOT flagged (it is in your pool)")
+    return ok
 
 
 # ------------------------------------------------------------- COSTS $ ---- #
@@ -173,6 +218,27 @@ def _expand():
     import llm_tasks as T
     for t in T.expand_query("data engineer roles"):
         print("   ", t)
+    return True
+
+
+@check("grade", "$", "verified scoring: model cites, code checks the quotes")
+def _grade():
+    import helpers as H, scoring as S, llm_tasks as T, requests
+    r = requests.get("https://boards-api.greenhouse.io/v1/boards/figma/jobs",
+                     params={"content": "true"}, timeout=30)
+    jd = H._strip_html(next(j for j in r.json()["jobs"]
+                            if j["title"] == "Data Engineer")["content"])
+    edu = "; ".join(f"{e['degree']}, {e['school']}"
+                    for e in H.load_profile()["education"])
+    reqs = T.extract_requirements(jd)
+    print(f"  {len(reqs)} requirements ({sum(r['must_have'] for r in reqs)} required)\n")
+    for v in H.load_resume_variants():
+        txt = S.resume_text(v) + " Education: " + edu
+        cov = S.verify_and_score(txt, T.cite_evidence(reqs, txt))
+        print(f"  {v['resume_id']:<16}{cov['score']:>3}/100  "
+              f"{len(cov['covered'])}/{len(reqs)} evidenced"
+              + (f", {len(cov['fabricated'])} citation(s) rejected"
+                 if cov["fabricated"] else ""))
     return True
 
 
@@ -218,7 +284,7 @@ def main():
     failures = []
     for name in names:
         fn, cost, note = CHECKS[name]
-        print(f"\n=== {name}  [{cost}] — {note}")
+        print(f"\n=== {name}  [{cost}] - {note}")
         try:
             if fn() is False:
                 failures.append(name)
@@ -228,7 +294,7 @@ def main():
 
     print("\n" + "=" * 74)
     print(f"{len(names) - len(failures)}/{len(names)} passed"
-          + (f" — failed: {', '.join(failures)}" if failures else ""))
+          + (f" - failed: {', '.join(failures)}" if failures else ""))
 
 
 if __name__ == "__main__":
